@@ -1,0 +1,30 @@
+# ESP-IDF build artifacts
+firmware/build/
+firmware/managed_components/
+firmware/.idf_cmake_build_configs
+firmware/sdkconfig
+firmware/sdkconfig.old
+firmware/dependencies.lock
+
+# Xcode
+*.xcuserstate
+xcuserdata/
+*.xcworkspace/xcuserdata/
+DerivedData/
+*.ipa
+*.dSYM.zip
+*.dSYM
+VoiceMaskApp/VoiceMaskApp.xcodeproj/xcuserdata/
+VoiceMaskApp/VoiceMaskApp.xcworkspace/
+
+# macOS
+.DS_Store
+**/.DS_Store
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Logs
+*.log
