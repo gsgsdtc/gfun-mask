@@ -5,7 +5,8 @@ firmware/.idf_cmake_build_configs
 firmware/sdkconfig
 firmware/sdkconfig.old
 firmware/dependencies.lock
-firmware/cache
+firmware/.cache/
+firmware/.vscode/
 
 # Xcode
 *.xcuserstate
