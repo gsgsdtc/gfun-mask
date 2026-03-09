@@ -1,32 +1,34 @@
 # Module Spec: audio-player
 
 > 模块：iOS 音频存储与播放
-> 最近同步：2026-03-05
-> 状态：Phase 2 开发中
+> 最近同步：2026-03-10
+> 状态：Phase 2 完成（PCM WAV 存储与播放）
 
 ---
 
 ## 1. 模块概述
 
-实现 iOS 端音频接收、Opus 文件保存、录音管理、音频播放功能。接收 ESP32 通过 BLE L2CAP 传输的 Opus 音频帧，封装为可播放的音频文件，提供录音列表管理和播放器界面。
+实现 iOS 端音频接收、文件保存、录音管理、音频播放功能。当前阶段接收 ESP32 的 PCM 直传帧，封装为标准 WAV 文件（16kHz, 16-bit, mono）供 AVAudioPlayer 直接播放，以验证音频采集质量。后续切换为 Opus 解码。
 
 ### 1.1 边界
 
 | 边界 | 说明 |
 |------|------|
-| 上游 | BLE L2CAP 通道（ble-channel 模块） |
-| 下游 | 无 |
-| 输入 | Opus 音频帧、用户操作（播放/删除） |
-| 输出 | 音频播放、文件持久化 |
+| 上游 | BLE L2CAP 通道（ble-channel 模块）提供音频帧 |
+| 下游 | 无（本地播放） |
+| 输入 | PCM 音频帧 payload（640B/帧）、用户操作（播放/删除） |
+| 输出 | WAV 文件持久化、音频播放 |
 
 ### 1.2 技术选型
 
 | 组件 | 选型 | 说明 |
 |------|------|------|
-| 音频解码 | AVAudioPlayer + Opus 解码 | iOS 原生 + 第三方库 |
-| 文件格式 | .caf 或 .ogg | 支持 Opus 编码 |
-| 数据持久化 | FileManager + App Sandbox | 本地文件存储 |
-| UI | SwiftUI | 声明式界面 |
+| 当前音频格式 | WAV (PCM 16kHz 16-bit mono) | PCM 直传验证阶段，AVAudioPlayer 直接支持 |
+| 目标音频格式 | Opus → CAF/OGG | Phase 3 切换 |
+| 音频播放 | AVAudioPlayer | iOS 系统播放器，支持 WAV |
+| 文件存储 | FileManager + App Sandbox | Documents/Recordings/ |
+| 元数据持久化 | UserDefaults (JSON) | Recording 列表 |
+| UI | SwiftUI | ContentView 内嵌 |
 
 ---
 
@@ -36,55 +38,58 @@
 
 | 功能 | 说明 |
 |------|------|
-| 帧解析 | 解析 BLE 音频帧协议（Frame Type + Payload） |
-| 帧缓存 | 实时缓存接收的 Opus 帧 |
-| 完整性校验 | 通过 RECORD_END 的帧数校验 |
+| 帧解析 | 由 L2CAPHandler + FrameParser 解析，回调音频 payload（已去帧头） |
+| 帧缓存 | AudioReceiver 将每帧加 2 字节长度前缀后追加到 opusDataBuffer |
+| 完整性校验 | 通过 RECORD_END 帧的 uint32 总帧数进行对比 |
+| 录音时长 | 按 20ms/帧累计（Date().timeIntervalSince(startTime)） |
 
 ### 2.2 文件保存
 
 | 功能 | 说明 |
 |------|------|
-| 格式封装 | 将 Opus 帧封装为 .caf 文件 |
-| 元数据 | 文件名、时长、大小、创建时间 |
-| 存储位置 | App Documents 目录 |
+| 格式 | 标准 WAV（RIFF PCM） |
+| 文件名 | `recording_yyyyMMdd_HHmmss.wav` |
+| 存储位置 | `Documents/Recordings/` |
+| 处理步骤 | 剥离 2 字节长度前缀 → 拼接纯 PCM → 写 WAV 头 → 保存文件 |
 
 ### 2.3 录音管理
 
 | 功能 | 说明 |
 |------|------|
-| 列表展示 | 显示所有录音记录 |
-| 详情查看 | 文件名、时长、大小、创建时间、编码格式 |
-| 删除功能 | 从列表和文件系统删除 |
+| 列表展示 | RecordingListView，显示文件名/时长/大小/日期 |
+| 详情查看 | RecordingDetailView，播放器 + 元数据 |
+| 删除 | 从 UserDefaults 列表 + 文件系统同步删除 |
+| 滑动删除 | SwiftUI List onDelete 支持 |
 
 ### 2.4 音频播放
 
 | 功能 | 说明 |
 |------|------|
-| 播放控制 | 播放/暂停/停止 |
-| 进度显示 | 当前播放进度、总时长 |
-| 后台播放 | 支持 App 切后台继续播放（可选） |
+| 播放控制 | 播放/暂停/停止/跳转（togglePlayPause + seek） |
+| 进度显示 | Timer 每 0.1s 更新 currentTime |
+| 加载 | `AVAudioPlayer(contentsOf: url)` 直接加载 WAV |
 
 ---
 
-## 3. 模块结构
+## 3. 模块结构（实际代码）
 
 ```
 VoiceMaskApp/VoiceMaskApp/
 ├── Audio/
-│   ├── AudioReceiver.swift       # 音频帧接收与缓存
-│   ├── AudioFileWriter.swift     # Opus 文件封装与保存
-│   ├── AudioPlayer.swift         # 音频播放器封装
-│   ├── RecordingManager.swift    # 录音记录管理
-│   └── OpusDecoder.swift         # Opus 解码（第三方库封装）
+│   ├── AudioReceiver.swift      # 音频帧接收与缓存
+│   ├── AudioFileWriter.swift    # PCM → WAV 文件封装与保存
+│   ├── AudioPlayer.swift        # AVAudioPlayer 封装
+│   ├── RecordingManager.swift   # 录音记录 CRUD（UserDefaults）
+│   └── FrameParser.swift        # BLE 帧协议解析器
+├── BLE/
+│   ├── BLEManager.swift         # CoreBluetooth 管理器
+│   └── L2CAPHandler.swift       # L2CAP Stream + 音频帧回调
 ├── Models/
-│   └── Recording.swift           # 录音数据模型
-├── Views/
-│   ├── RecordingListView.swift   # 录音列表页
-│   ├── RecordingDetailView.swift # 录音详情页
-│   └── AudioPlayerView.swift     # 播放器控件
-└── ViewModels/
-    └── RecordingListViewModel.swift
+│   └── Recording.swift          # 录音数据模型
+└── ContentView.swift            # 主界面（录音控制 + 列表 + 详情，三合一）
 ```
+
+> 注：原 spec 中设计的 `OpusDecoder.swift`、`Views/`、`ViewModels/` 目录暂未创建，功能直接在 ContentView.swift 中内嵌实现。
 
 ---
 
@@ -93,46 +98,40 @@ VoiceMaskApp/VoiceMaskApp/
 ### 4.1 AudioReceiver.swift
 
 ```swift
-/// 音频接收与缓存
 class AudioReceiver: ObservableObject {
-    @Published var isReceiving: Bool = false
-    @Published var frameCount: Int = 0
+    @Published var isReceiving: Bool
+    @Published var frameCount: Int
+    @Published var recordingDuration: TimeInterval
 
-    /// 开始接收录音
-    func startReceiving()
-
-    /// 停止接收，返回缓存的音频数据
-    func stopReceiving() -> Data?
-
-    /// 处理收到的音频帧
-    func handleAudioFrame(_ data: Data)
-
-    /// 处理录音结束确认
-    func handleRecordEnd(expectedFrames: UInt32) -> Bool
+    func startReceiving()                           // 重置状态，标记开始
+    func stopReceiving() -> Data?                   // 停止，返回 opusDataBuffer
+    func handleAudioFrame(_ data: Data)             // 追加帧（+2B 长度前缀）
+    func handleRecordEnd(expectedFrames: UInt32)    // 记录预期帧数，停止接收
+    func verifyIntegrity() -> Bool                  // 校验 frameCount == expectedFrames
 }
 ```
 
 ### 4.2 AudioFileWriter.swift
 
 ```swift
-/// 音频文件写入
 struct AudioFileWriter {
-    /// 将 Opus 数据封装为 .caf 文件
-    static func writeOpusFile(
-        opusData: Data,
+    /// 将 AudioReceiver 的帧数据（含 2B 长度前缀）转换为 WAV 文件
+    /// 剥离长度前缀 → 拼接纯 PCM → 写 RIFF WAV 头 → 保存
+    static func writeAudioFile(
+        opusData: Data,          // 实际为带长度前缀的 PCM 帧数据
         sampleRate: Int = 16000,
         channels: Int = 1
     ) -> URL?
 
-    /// 生成唯一文件名
-    static func generateFileName() -> String
+    static func generateFileName() -> String    // "recording_yyyyMMdd_HHmmss"
+    static func getRecordingsDirectory() -> URL // Documents/Recordings/
+    static func calculateFileSize(_ data: Data) -> Int64
 }
 ```
 
 ### 4.3 Recording.swift
 
 ```swift
-/// 录音数据模型
 struct Recording: Identifiable, Codable {
     let id: UUID
     let fileName: String
@@ -140,60 +139,44 @@ struct Recording: Identifiable, Codable {
     let duration: TimeInterval
     let fileSize: Int64
     let createdAt: Date
-    let format: String // "Opus 16kHz"
+    let format: String          // "PCM WAV 16kHz Mono 16-bit"
 
-    /// 格式化时长显示
-    var formattedDuration: String
-
-    /// 格式化大小显示
-    var formattedSize: String
+    var formattedDuration: String   // "MM:SS"
+    var formattedSize: String       // "XX.X KB"
+    var formattedDate: String       // 中文日期
 }
 ```
 
 ### 4.4 RecordingManager.swift
 
 ```swift
-/// 录音记录管理
 class RecordingManager: ObservableObject {
-    @Published var recordings: [Recording] = []
+    @Published var recordings: [Recording]
 
-    /// 加载所有录音
-    func loadRecordings()
-
-    /// 添加新录音
-    func addRecording(_ recording: Recording)
-
-    /// 删除录音
-    func deleteRecording(_ recording: Recording)
-
-    /// 获取录音文件 URL
-    func fileURL(for recording: Recording) -> URL
+    func loadRecordings()                           // 从 UserDefaults 加载，过滤已删文件
+    func addRecording(_ recording: Recording)       // 插入列表头部
+    func deleteRecording(_ recording: Recording)    // 删文件 + 从列表移除
+    func deleteRecordings(at offsets: IndexSet)     // 批量删除（SwiftUI onDelete）
 }
 ```
 
 ### 4.5 AudioPlayer.swift
 
 ```swift
-/// 音频播放器
 class AudioPlayer: ObservableObject {
-    @Published var isPlaying: Bool = false
-    @Published var currentTime: TimeInterval = 0
-    @Published var duration: TimeInterval = 0
+    @Published var isPlaying: Bool
+    @Published var currentTime: TimeInterval
+    @Published var duration: TimeInterval
+    @Published var isLoading: Bool
 
-    /// 加载音频文件
-    func load(url: URL) -> Bool
-
-    /// 播放
-    func play()
-
-    /// 暂停
+    func load(url: URL) -> Bool       // AVAudioPlayer(contentsOf:) 加载 WAV
+    func play()                       // 设置 AVAudioSession + 播放
     func pause()
-
-    /// 停止
     func stop()
-
-    /// 跳转到指定时间
     func seek(to time: TimeInterval)
+    func togglePlayPause()
+
+    static func formatTime(_ time: TimeInterval) -> String  // "MM:SS"
 }
 ```
 
@@ -202,125 +185,116 @@ class AudioPlayer: ObservableObject {
 ## 5. 数据流
 
 ```
-BLE L2CAP
+BLE L2CAP SDU (643B)
      │
      ▼
-┌─────────────┐    音频帧     ┌─────────────┐
-│L2CAPHandler │ ───────────► │AudioReceiver│
-└─────────────┘              └─────────────┘
-                                   │
-                                   │ Opus Data
-                                   ▼
-                            ┌─────────────┐
-                            │AudioFileWr. │
-                            └─────────────┘
-                                   │
-                                   │ .caf File
-                                   ▼
-                            ┌─────────────┐
-                            │RecordingMgr │
-                            └─────────────┘
-                                   │
-                                   ▼
-                            ┌─────────────┐
-                            │ UI (SwiftUI)│
-                            └─────────────┘
-                                   │
-                                   │ User Play
-                                   ▼
-                            ┌─────────────┐
-                            │AudioPlayer  │
-                            └─────────────┘
+┌─────────────┐  FrameParser  ┌─────────────┐
+│L2CAPHandler │ ─────────────► │AudioReceiver│
+│             │  640B payload  │             │
+└─────────────┘                └─────────────┘
+                                    │ opusDataBuffer
+                                    │ (帧数 × 642B)
+                                    ▼
+                              ┌──────────────┐
+                              │AudioFileWriter│ 剥前缀 → WAV 封装
+                              └──────────────┘
+                                    │ .wav 文件
+                                    ▼
+                              ┌──────────────┐
+                              │RecordingMgr  │ UserDefaults 持久化
+                              └──────────────┘
+                                    │
+                                    ▼
+                              ┌──────────────┐
+                              │  SwiftUI UI  │
+                              └──────────────┘
+                                    │ 用户点击播放
+                                    ▼
+                              ┌──────────────┐
+                              │ AudioPlayer  │ AVAudioPlayer(contentsOf:)
+                              └──────────────┘
 ```
 
 ---
 
-## 6. UI 设计
+## 6. 文件存储
 
-### 6.1 录音列表页
-
-```
-┌─────────────────────────────────┐
-│  录音                      [编辑] │
-├─────────────────────────────────┤
-│  ● 录音_20260305_143021         │
-│    00:32  •  198 KB  •  今天 14:30│
-├─────────────────────────────────┤
-│  ● 录音_20260304_091533         │
-│    01:45  •  632 KB  •  昨天 09:15│
-├─────────────────────────────────┤
-│  ● 录音_20260303_160722         │
-│    00:15  •  92 KB  •  3月3日    │
-└─────────────────────────────────┘
-```
-
-### 6.2 录音详情页
-
-```
-┌─────────────────────────────────┐
-│  ←  录音详情                      │
-├─────────────────────────────────┤
-│                                 │
-│         ▶️ 播放按钮              │
-│                                 │
-│  ─────────●─────────────        │
-│  00:15          00:32           │
-│                                 │
-├─────────────────────────────────┤
-│  文件名：录音_20260305_143021    │
-│  时长：32 秒                     │
-│  大小：198 KB                    │
-│  创建时间：2026-03-05 14:30:21   │
-│  编码格式：Opus 16kHz Mono       │
-├─────────────────────────────────┤
-│           [删除录音]             │
-└─────────────────────────────────┘
-```
-
----
-
-## 7. 文件存储
-
-### 7.1 目录结构
+### 6.1 目录结构
 
 ```
 App Documents/
 └── Recordings/
-    ├── recording_20260305_143021.caf
-    ├── recording_20260304_091533.caf
-    └── recording_20260303_160722.caf
+    ├── recording_20260310_143021.wav
+    └── recording_20260310_091533.wav
 ```
 
-### 7.2 元数据持久化
+### 6.2 WAV 文件格式（内部结构）
 
-使用 UserDefaults 或 JSON 文件存储录音列表元数据：
+```
+RIFF (4B) | fileSize (4B) | WAVE (4B)
+fmt  (4B) | 16 (4B) | PCM=1 (2B) | ch=1 (2B) | 16000 (4B) | 32000 (4B) | 2 (2B) | 16 (2B)
+data (4B) | dataSize (4B) | [raw PCM int16 LE ...]
+```
+
+### 6.3 元数据（UserDefaults JSON）
 
 ```json
 [
   {
     "id": "UUID-xxx",
-    "fileName": "recording_20260305_143021",
-    "fileURL": "file://...",
-    "duration": 32.5,
-    "fileSize": 198000,
-    "createdAt": "2026-03-05T14:30:21Z",
-    "format": "Opus 16kHz Mono"
+    "fileName": "recording_20260310_143021",
+    "fileURL": "file://.../recording_20260310_143021.wav",
+    "duration": 10.24,
+    "fileSize": 327722,
+    "createdAt": "2026-03-10T14:30:21Z",
+    "format": "PCM WAV 16kHz Mono 16-bit"
   }
 ]
 ```
 
 ---
 
+## 7. UI 设计（实际实现）
+
+### 7.1 TabView 结构
+
+```
+TabView
+├── Tab 1：录音控制（RecordingControlView）
+│   ├── StatusBar（BLE 连接状态指示灯）
+│   ├── 录音中动画（waveform.circle.fill）或待机（mic.circle）
+│   ├── 已录制 X 秒 / 已接收 X 帧
+│   └── 开始/停止按钮
+└── Tab 2：录音列表（RecordingListView）
+    └── 点击 → Sheet：RecordingDetailView
+        ├── 播放/暂停按钮
+        ├── 进度条
+        └── 元数据详情
+```
+
+---
+
 ## 8. 验收状态
+
+### Phase 2 — PCM WAV 存储与播放
 
 | 验收项 | 状态 | 备注 |
 |--------|------|------|
-| 接收音频帧并缓存 | ⏳ | 待开发 |
-| 封装为 .caf 文件 | ⏳ | 待开发 |
-| 录音列表展示 | ⏳ | 待开发 |
-| 录音详情查看 | ⏳ | 待开发 |
-| 音频播放功能 | ⏳ | 待开发 |
-| 删除录音功能 | ⏳ | 待开发 |
+| 接收音频帧并缓存 | ✅ | AudioReceiver，+2B 长度前缀 |
+| 封装为 WAV 文件 | ✅ | RIFF PCM 16kHz mono |
+| 录音列表展示 | ✅ | SwiftUI List + UserDefaults |
+| 录音详情查看 | ✅ | RecordingDetailView |
+| 音频播放（AVAudioPlayer） | ✅ | 直接加载 WAV |
+| 删除录音功能 | ✅ | 滑动删除 |
+| 完整性校验（RECORD_END） | ✅ | verifyIntegrity() |
+
+### Phase 3 — Opus 解码（待完成）
+
+| 验收项 | 状态 |
+|--------|------|
+| 集成 Opus 解码库 | ⏳ |
+| 封装为 CAF/OGG 格式 | ⏳ |
+| iOS 端 Opus 解码播放 | ⏳ |
 
 ---
 
@@ -328,4 +302,9 @@ App Documents/
 
 | 日期 | feat/fix | 变更内容 |
 |------|----------|---------|
-| 2026-03-05 | feat #02 | 创建模块规格，定义接口和 UI 结构 |
+| 2026-03-05 | feat #02 | 创建模块规格，定义 Opus 接收与播放接口 |
+| 2026-03-09 | feat | 实现完整功能：AudioReceiver/FileWriter/Player/RecordingManager |
+| 2026-03-09 | fix | FrameParser 崩溃修复（Data.removeFirst EXC_BREAKPOINT → cursor 方式） |
+| 2026-03-10 | fix | AudioFileWriter 改为写 WAV 格式（剥 2B 前缀 + RIFF 头），替代 .raw |
+| 2026-03-10 | fix | AudioPlayer 改用 `AVAudioPlayer(contentsOf:)` 直接加载 WAV |
+| 2026-03-10 | fix | L2CAPHandler 读缓冲区 512 → 1024，避免 643B PCM 帧被截断 |
