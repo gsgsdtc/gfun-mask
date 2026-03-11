@@ -25,7 +25,7 @@ from pipecat.frames.frames import (
     TTSStoppedFrame,
     TranscriptionFrame,
 )
-from pipecat.services.stt_service import STTService, STTSettings
+from pipecat.services.stt_service import SegmentedSTTService, STTSettings
 from pipecat.services.tts_service import TTSService, TTSSettings
 from pipecat.transcriptions.language import Language
 
@@ -52,7 +52,7 @@ def _pcm_to_wav(pcm_bytes: bytes, sample_rate: int = 16000,
 # DashScope STT：paraformer-realtime-v2
 # ──────────────────────────────────────────────
 
-class DashScopeSTTService(STTService):
+class DashScopeSTTService(SegmentedSTTService):
     """
     阿里云 Paraformer STT 的 Pipecat 服务实现。
     接收累积的 PCM 音频 bytes，转写后 yield TranscriptionFrame。
@@ -64,16 +64,19 @@ class DashScopeSTTService(STTService):
         self._model = model
 
     async def run_stt(self, audio: bytes) -> AsyncGenerator[Frame, None]:
+        # SegmentedSTTService 传入的已经是 WAV bytes（含 header）
         if not audio:
             logger.warning("[DashScopeSTT] 收到空音频，跳过")
             return
 
-        duration_ms = len(audio) / (16000 * 2) * 1000
-        logger.info(f"[DashScopeSTT] ▶ 开始识别：{len(audio)} bytes / {duration_ms:.0f}ms")
-
+        logger.info(f"[DashScopeSTT] ▶ 开始识别：{len(audio)} bytes WAV")
         dashscope.api_key = self._api_key
-        wav_bytes = _pcm_to_wav(audio)
-        logger.debug(f"[DashScopeSTT] WAV 封装完成：{len(wav_bytes)} bytes")
+
+        # 调试：保存 WAV 以便检查音频内容
+        debug_wav_path = "/tmp/debug_stt_input.wav"
+        with open(debug_wav_path, "wb") as dbg:
+            dbg.write(audio)
+        logger.info(f"[DashScopeSTT] 调试 WAV 已保存至 {debug_wav_path}，大小={len(audio)} bytes")
 
         def _sync_recognize(wav_path: str) -> str:
             from dashscope.audio.asr import Recognition, RecognitionCallback
@@ -100,14 +103,8 @@ class DashScopeSTTService(STTService):
                 return sentence_list.get("text", "").strip()
             return ""
 
-        # 调试：保存 WAV 以便检查音频内容
-        debug_wav_path = "/tmp/debug_stt_input.wav"
-        with open(debug_wav_path, "wb") as dbg:
-            dbg.write(wav_bytes)
-        logger.info(f"[DashScopeSTT] 调试 WAV 已保存至 {debug_wav_path}，大小={len(wav_bytes)} bytes")
-
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
-            f.write(wav_bytes)
+            f.write(audio)
             tmp_path = f.name
 
         try:
@@ -124,7 +121,8 @@ class DashScopeSTTService(STTService):
             logger.info(f"[DashScopeSTT] ✓ 识别结果: '{text}'")
             yield TranscriptionFrame(text=text, user_id="user", timestamp="")
         else:
-            logger.warning("[DashScopeSTT] 识别结果为空（API 返回 sentence 列表为空或文本为空）")
+            logger.warning("[DashScopeSTT] 识别结果为空，发送 error 通知客户端")
+            yield ErrorFrame("STT_EMPTY: 未能识别到语音，请靠近麦克风后重试")
 
 
 # ──────────────────────────────────────────────

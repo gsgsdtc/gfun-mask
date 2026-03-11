@@ -59,6 +59,7 @@ final class VoiceChatViewModel: ObservableObject {
     private let wsClient = PipecatWebSocketClient()
     private let ttsPlayer = TtsAudioPlayer()
     private var recordingTimer: Timer?
+    private var processingTimeoutTask: Task<Void, Never>?
     private let pathMonitor = NWPathMonitor()
     private var networkReady = false
 
@@ -157,6 +158,24 @@ final class VoiceChatViewModel: ObservableObject {
         print("[ViewModel] ■ stopRecording → state=.processing (duration=\(String(format: "%.1f", recordingDuration))s)")
         chatState = .processing
         wsClient.stopRecording()
+        startProcessingTimeout()
+    }
+
+    private func startProcessingTimeout() {
+        processingTimeoutTask?.cancel()
+        processingTimeoutTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 15_000_000_000)  // 15 秒
+            guard !Task.isCancelled else { return }
+            if chatState == .processing || chatState == .playing {
+                print("[ViewModel] ⚠️ 处理超时 → state=.idle")
+                chatState = .idle
+            }
+        }
+    }
+
+    private func cancelProcessingTimeout() {
+        processingTimeoutTask?.cancel()
+        processingTimeoutTask = nil
     }
 
     // MARK: - Pipecat 事件处理
@@ -180,6 +199,7 @@ final class VoiceChatViewModel: ObservableObject {
 
         case .ttsStart:
             print("[ViewModel] ← tts_start → state=.playing")
+            cancelProcessingTimeout()
             chatState = .playing
             ttsPlayer.reset()
 

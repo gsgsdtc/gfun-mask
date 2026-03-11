@@ -9,7 +9,8 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass, field
+import sys
+from pathlib import Path
 
 import uvicorn
 from fastapi import FastAPI
@@ -18,6 +19,7 @@ from fastapi.websockets import WebSocket
 from pipecat.frames.frames import (
     AudioRawFrame,
     EndFrame,
+    ErrorFrame,
     Frame,
     InputAudioRawFrame,
     LLMFullResponseEndFrame,
@@ -30,6 +32,8 @@ from pipecat.frames.frames import (
     StartFrame,
     UserStartedSpeakingFrame,
     UserStoppedSpeakingFrame,
+    VADUserStartedSpeakingFrame,
+    VADUserStoppedSpeakingFrame,
 )
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
@@ -43,10 +47,28 @@ from pipecat.transports.websocket.fastapi import (
     FastAPIWebsocketParams,
     FastAPIWebsocketTransport,
 )
-from loguru import logger
-
 from config import Config, DASHSCOPE_BASE_URL
 from dashscope_services import DashScopeSTTService, DashScopeTTSService
+
+# ── 日志配置：在所有 pipecat 导入完成后设置，避免被 pipecat 内部 logger.remove() 覆盖 ──
+from loguru import logger
+
+_LOG_DIR = Path(__file__).parent / "logs"
+_LOG_DIR.mkdir(exist_ok=True)
+
+logger.remove()
+logger.add(sys.stderr, level="DEBUG", colorize=True,
+           format="<green>{time:HH:mm:ss.SSS}</green> | <level>{level: <8}</level> | {message}")
+logger.add(
+    _LOG_DIR / "server.log",
+    level="DEBUG",
+    rotation="10 MB",
+    retention=5,
+    encoding="utf-8",
+    format="{time:YYYY-MM-DD HH:mm:ss.SSS} | {level: <8} | {name}:{function}:{line} - {message}",
+)
+
+logger.info(f"[Main] 日志已初始化，文件路径: {_LOG_DIR / 'server.log'}")
 
 # ──────────────────────────────────────────────
 # 自定义帧：iOS ping 控制消息
@@ -67,32 +89,12 @@ class iOSProtocolSerializer(FrameSerializer):
     """
     iOS ↔ Pipecat 协议转换：
     - 反序列化：iOS JSON/binary → Pipecat Frame
-    - 序列化：Pipecat Frame → iOS JSON/binary
+    - 序列化：只处理 OutputTransportMessageUrgentFrame（其他帧由 TTSAudioForwarder 包装）
     """
 
     async def serialize(self, frame: Frame) -> str | bytes | None:
         """将 Pipecat 内部帧转为 iOS 期望的 WebSocket 消息格式"""
-        if isinstance(frame, TranscriptionFrame):
-            msg = json.dumps({"type": "transcript_final", "text": frame.text})
-            logger.info(f"[Serializer] → transcript_final: '{frame.text}'")
-            return msg
-        elif isinstance(frame, TextFrame):
-            msg = json.dumps({"type": "llm_done", "text": frame.text})
-            logger.info(f"[Serializer] → llm_done: '{frame.text[:60]}...' ({len(frame.text)} chars)")
-            return msg
-        elif isinstance(frame, TTSStartedFrame):
-            logger.info("[Serializer] → tts_start")
-            return json.dumps({"type": "tts_start"})
-        elif isinstance(frame, TTSAudioRawFrame):
-            # TTSAudioForwarder 已将 TTSAudioRawFrame 转为 OutputTransportMessageUrgentFrame
-            # 此处不应再收到 TTSAudioRawFrame，但保留作为后备
-            data = bytes([TTS_AUDIO_PREFIX]) + frame.audio
-            logger.debug(f"[Serializer] → tts_audio chunk (fallback): {len(frame.audio)} bytes")
-            return data
-        elif isinstance(frame, TTSStoppedFrame):
-            logger.info("[Serializer] → tts_end")
-            return json.dumps({"type": "tts_end"})
-        elif isinstance(frame, OutputTransportMessageUrgentFrame):
+        if isinstance(frame, OutputTransportMessageUrgentFrame):
             logger.debug(f"[Serializer] → urgent: {type(frame.message).__name__} {len(frame.message) if isinstance(frame.message, (bytes, str)) else ''}")
             return frame.message
         return None
@@ -111,11 +113,11 @@ class iOSProtocolSerializer(FrameSerializer):
 
         msg_type = msg.get("type", "")
         if msg_type == "start":
-            logger.info("[Serializer] ← start → UserStartedSpeakingFrame")
-            return UserStartedSpeakingFrame()
+            logger.info("[Serializer] ← start → VADUserStartedSpeakingFrame")
+            return VADUserStartedSpeakingFrame()
         elif msg_type == "stop":
-            logger.info("[Serializer] ← stop → UserStoppedSpeakingFrame")
-            return UserStoppedSpeakingFrame()
+            logger.info("[Serializer] ← stop → VADUserStoppedSpeakingFrame")
+            return VADUserStoppedSpeakingFrame()
         elif msg_type == "ping":
             return iOSPingFrame()
         return None
@@ -137,18 +139,70 @@ class PingHandler(FrameProcessor):
 
 
 # ──────────────────────────────────────────────
-# TTS 音频转发器
-# TTSAudioRawFrame 含 MP3 数据，直接进 transport 会触发 PCM resampler 报错
-# 在此提前转换为 OutputTransportMessageUrgentFrame（binary），绕过 resampler
+# STT 转录转发器
+# 放在 context_aggregator.user() 之前，拦截 TranscriptionFrame。
+# context_aggregator.user() 会消费 TranscriptionFrame（不继续下传），
+# 因此必须在它之前将 transcript_final 发给 iOS。
+# TranscriptionFrame 仍继续传递，让 context_aggregator.user() 正常工作。
+# ──────────────────────────────────────────────
+
+class TranscriptForwarder(FrameProcessor):
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        await super().process_frame(frame, direction)
+        if isinstance(frame, TranscriptionFrame):
+            msg = json.dumps({"type": "transcript_final", "text": frame.text})
+            logger.info(f"[TranscriptForwarder] → transcript_final: '{frame.text}'")
+            await self.push_frame(OutputTransportMessageUrgentFrame(message=msg))
+            await self.push_frame(frame, direction)  # 继续传递给 context_aggregator.user()
+        elif isinstance(frame, ErrorFrame):
+            msg = json.dumps({"type": "error", "code": "STT_EMPTY", "message": str(frame.error)})
+            logger.warning(f"[TranscriptForwarder] → error: {frame.error}")
+            await self.push_frame(OutputTransportMessageUrgentFrame(message=msg))
+            await self.push_frame(frame, direction)
+        else:
+            await self.push_frame(frame, direction)
+
+
+# ──────────────────────────────────────────────
+# TTS 帧转发器
+# 放在 tts 之后，处理 TTS 相关帧 + LLM 完整回复。
+# Pipecat 传输层只处理 OutputTransportMessageUrgentFrame，
+# 其他帧会被静默丢弃，此处统一包装。
+#
+# llm_done 处理：LLM 每个 token 产生一个 TextFrame，需累积后
+# 在 LLMFullResponseEndFrame 时一次性发送，避免重复消息。
 # ──────────────────────────────────────────────
 
 class TTSAudioForwarder(FrameProcessor):
+    def __init__(self):
+        super().__init__()
+        self._llm_text_buffer: list[str] = []
+
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
         if isinstance(frame, TTSAudioRawFrame):
             data = bytes([TTS_AUDIO_PREFIX]) + frame.audio
             logger.debug(f"[TTSForwarder] → tts_audio binary: {len(frame.audio)} bytes MP3")
             await self.push_frame(OutputTransportMessageUrgentFrame(message=data))
+        elif isinstance(frame, TTSStartedFrame):
+            logger.info("[TTSForwarder] → tts_start")
+            await self.push_frame(OutputTransportMessageUrgentFrame(message=json.dumps({"type": "tts_start"})))
+        elif isinstance(frame, TTSStoppedFrame):
+            logger.info("[TTSForwarder] → tts_end")
+            await self.push_frame(OutputTransportMessageUrgentFrame(message=json.dumps({"type": "tts_end"})))
+        elif isinstance(frame, TextFrame):
+            # 累积 LLM 文本块，不立即发送（避免每 token 发一条 llm_done）
+            self._llm_text_buffer.append(frame.text)
+            await self.push_frame(frame, direction)  # 继续传递给 context_aggregator.assistant()
+        elif isinstance(frame, LLMFullResponseEndFrame):
+            # LLM 生成结束，发送完整回复文本
+            full_text = "".join(self._llm_text_buffer)
+            self._llm_text_buffer.clear()
+            if full_text:
+                msg = json.dumps({"type": "llm_done", "text": full_text})
+                logger.info(f"[TTSForwarder] → llm_done (full): '{full_text[:60]}' ({len(full_text)} chars)")
+                await self.push_frame(OutputTransportMessageUrgentFrame(message=msg))
+            await self.push_frame(frame, direction)
         else:
             await self.push_frame(frame, direction)
 
@@ -166,7 +220,7 @@ async def websocket_endpoint(websocket: WebSocket):
     transport = FastAPIWebsocketTransport(
         websocket=websocket,
         params=FastAPIWebsocketParams(
-            audio_in_enabled=False,   # 序列化器直接生成 InputAudioRawFrame，无需 transport 处理音频输入
+            audio_in_enabled=True,    # 必须 True，否则 push_audio_frame 丢弃 InputAudioRawFrame
             audio_out_enabled=True,   # 需要 True 以便 TTSStartedFrame/TTSStoppedFrame 正常传递
             serializer=iOSProtocolSerializer(),
         ),
@@ -201,22 +255,26 @@ async def websocket_endpoint(websocket: WebSocket):
     # Ping 处理器
     ping_handler = PingHandler()
 
-    # TTS 音频转发器（MP3 → binary frame，绕过 PCM resampler）
+    # STT 转录转发器（必须在 context_aggregator.user() 之前）
+    transcript_forwarder = TranscriptForwarder()
+
+    # TTS 帧转发器（MP3 + tts_start/end + llm_done）
     tts_forwarder = TTSAudioForwarder()
 
-    # Pipecat 管道（原生音频处理）
+    # Pipecat 管道
     pipeline = Pipeline([
-        transport.input(),         # WebSocket 输入 → 反序列化为 Pipecat 帧
-                                   #   binary → InputAudioRawFrame
-                                   #   "start" → UserStartedSpeakingFrame
-                                   #   "stop"  → UserStoppedSpeakingFrame
-        ping_handler,              # iOSPingFrame → pong，其余帧透传
-        stt,                       # STT 原生接收 InputAudioRawFrame，在 UserStarted/Stopped 间累积
-        context_aggregator.user(), # 将识别文本加入对话上下文
-        llm,                       # LLM：生成回复
-        tts,                       # TTS：文字 → 音频（MP3）
-        tts_forwarder,             # TTSAudioRawFrame(MP3) → OutputTransportMessageUrgentFrame
-        transport.output(),        # 序列化 → WebSocket 输出
+        transport.input(),            # WebSocket 输入 → 反序列化为 Pipecat 帧
+                                      #   binary → InputAudioRawFrame
+                                      #   "start" → VADUserStartedSpeakingFrame
+                                      #   "stop"  → VADUserStoppedSpeakingFrame
+        ping_handler,                 # iOSPingFrame → pong，其余帧透传
+        stt,                          # STT：InputAudioRawFrame 累积 → TranscriptionFrame
+        transcript_forwarder,         # TranscriptionFrame → transcript_final 发给 iOS，同时继续下传
+        context_aggregator.user(),    # 将识别文本加入对话上下文（消费 TranscriptionFrame）
+        llm,                          # LLM：生成回复（TextFrame × N + LLMFullResponseEndFrame）
+        tts,                          # TTS：文字 → 音频（MP3）
+        tts_forwarder,                # tts_start/audio/end + llm_done → OutputTransportMessageUrgentFrame
+        transport.output(),           # 序列化 → WebSocket 输出
         context_aggregator.assistant(),  # 将 AI 回复加入对话历史
     ])
 
