@@ -1,16 +1,26 @@
 /*
  * @doc     docs/modules/audio-player/design/01-ios-audio-player-design.md §6
- * @purpose 主界面：BLE 连接状态 + 录音控制 + 录音列表
+ *          docs/modules/voice-chat/design/03-ios-voice-chat-frontend-design.md §7
+ * @purpose 主界面：BLE 连接状态 + 录音控制 + 录音列表 + 语音聊天
  */
 
 import SwiftUI
+
+// MARK: - AppMode：音频帧路由模式
+
+enum AppMode {
+    case recording    // BLE 音频 → AudioReceiver（本地保存）
+    case voiceChat    // BLE 音频 → VoiceChatViewModel（WebSocket 转发）
+}
 
 struct ContentView: View {
 
     @StateObject private var ble = BLEManager()
     @StateObject private var audioReceiver = AudioReceiver()
     @StateObject private var recordingManager = RecordingManager()
+    @StateObject private var voiceChatViewModel = VoiceChatViewModel()
     @State private var showRecordingDetail: Recording?
+    @State private var activeMode: AppMode = .recording
 
     var body: some View {
         TabView {
@@ -23,6 +33,7 @@ struct ContentView: View {
             .tabItem {
                 Label("录音", systemImage: "mic.circle")
             }
+            .onAppear { activeMode = .recording }
 
             // Tab 2: 录音列表
             RecordingListView(
@@ -32,6 +43,13 @@ struct ContentView: View {
             .tabItem {
                 Label("列表", systemImage: "list.bullet")
             }
+
+            // Tab 3: 语音聊天（Phase 3）
+            VoiceChatView(viewModel: voiceChatViewModel, ble: ble)
+                .tabItem {
+                    Label("聊天", systemImage: "message.circle")
+                }
+                .onAppear { activeMode = .voiceChat }
         }
         .onAppear {
             setupBLECallbacks()
@@ -53,10 +71,16 @@ struct ContentView: View {
         }
         print("[BLE] setupBLECallbacks: registering callbacks on handler \(handler)")
 
-        // 设置音频帧回调
+        // 音频帧按 activeMode 路由
         handler.onAudioFrame = { [weak audioReceiver] data in
-            print("[AUDIO] onAudioFrame: \(data.count) bytes")
-            audioReceiver?.handleAudioFrame(data)
+            switch activeMode {
+            case .recording:
+                print("[AUDIO] onAudioFrame → AudioReceiver: \(data.count) bytes")
+                audioReceiver?.handleAudioFrame(data)
+            case .voiceChat:
+                print("[AUDIO] onAudioFrame → VoiceChat: \(data.count) bytes")
+                Task { await self.voiceChatViewModel.handleBLEAudioFrame(data) }
+            }
         }
 
         // 设置录音结束回调
