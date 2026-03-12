@@ -1,7 +1,7 @@
 # Module Spec: ble-channel
 
 > 模块：BLE L2CAP 通信通道
-> 最近同步：2026-03-10
+> 最近同步：2026-03-12
 > 状态：Phase 2 完成（音频帧协议 + PCM 直传）
 
 ---
@@ -348,6 +348,26 @@ CONFIG_BT_NIMBLE_MSYS_1_BLOCK_COUNT=30  # mbuf 块数量
 | BLE L2CAP TX 流控（stall/unstall） | ✅ | BLE_HS_ESTALLED |
 | ESP32 发送 RECORD_END 帧 | ✅ | 含总帧数 |
 
+### 单元测试
+
+| 测试文件 | 框架 | 覆盖逻辑 |
+|----------|------|---------|
+| `firmware/test/test_psm_encode.c` | ESP-IDF Unity | PSM 2 字节 Little-Endian 编解码 |
+
+**测试用例（`firmware/test/test_psm_encode.c`）：**
+
+| 用例 | 验证内容 |
+|------|---------|
+| `psm_encode: PSM=128 produces [0x80, 0x00]` | PSM=128 正确编码为 LE 序列 |
+| `psm_decode: [0x80, 0x00] decodes to 128` | LE 序列正确解码回 PSM |
+| `psm encode/decode round-trip` | 编解码互为逆操作，值无失真 |
+| `psm_encode: PSM=255 boundary` | 边界值 255 编解码正确，无位运算溢出 |
+
+**运行方式：**
+```bash
+idf.py -C firmware/test build && ./firmware/test/build/test_psm_encode.elf
+```
+
 ---
 
 ## 9. 变更记录
@@ -362,3 +382,4 @@ CONFIG_BT_NIMBLE_MSYS_1_BLOCK_COUNT=30  # mbuf 块数量
 | 2026-03-09 | fix | iOS FrameParser：cursor 方式解析，修复 Data.removeFirst EXC_BREAKPOINT 崩溃 |
 | 2026-03-09 | feat | BLE L2CAP TX 流控：BLE_HS_ESTALLED 检测 + TX_UNSTALLED 恢复 |
 | 2026-03-09 | fix | iOS L2CAP 读缓冲区 512 → 1024，避免帧被截断 |
+| 2026-03-12 | test | 新增 PSM 编解码单元测试（Unity）：psm_encode/psm_decode 含边界值覆盖 |
