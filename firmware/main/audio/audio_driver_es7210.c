@@ -96,9 +96,9 @@ static esp_err_t es7243e_init_regs(void)
     ret |= es7243e_write_reg(0x1E, 0x00);
     ret |= es7243e_write_reg(0x1F, 0x0C);
 
-    /* Step 6: MIC PGA 增益（官方值 +30dB）*/
-    ret |= es7243e_write_reg(0x20, 0x1A);  /* MIC1 PGA: +30dB */
-    ret |= es7243e_write_reg(0x21, 0x1A);  /* MIC2 PGA: +30dB */
+    /* Step 6: MIC PGA 增益（此处设置会被 Step 7 的 Soft Reset 清空，仅保留官方原始序列）*/
+    ret |= es7243e_write_reg(0x20, 0x1A);  /* MIC1 PGA: +30dB（会被后续 Soft Reset 清空）*/
+    ret |= es7243e_write_reg(0x21, 0x1A);  /* MIC2 PGA: +30dB（会被后续 Soft Reset 清空）*/
 
     /* Step 7: 第二次 Soft Reset → Slave 模式，然后 ADC 使能 */
     ret |= es7243e_write_reg(0x00, 0x80);  /* Second Soft Reset (Slave Mode) */
@@ -112,12 +112,14 @@ static esp_err_t es7243e_init_regs(void)
     ret |= es7243e_write_reg(0xF9, 0x00);
     ret |= es7243e_write_reg(0x04, 0x01);
     ret |= es7243e_write_reg(0x17, 0x01);
-    ret |= es7243e_write_reg(0x20, 0x10);
-    ret |= es7243e_write_reg(0x21, 0x10);
+    /* 注意：不在 Soft Reset 前写 PGA，因为 Soft Reset 会清空所有寄存器 */
     ret |= es7243e_write_reg(0x00, 0x80);  /* Third Soft Reset */
     ret |= es7243e_write_reg(0x01, 0x3A);
     ret |= es7243e_write_reg(0x16, 0x3F);
     ret |= es7243e_write_reg(0x16, 0x00);
+    /* PGA 增益必须在最后一次 Soft Reset 之后设置，否则会被重置 */
+    ret |= es7243e_write_reg(0x20, 0x1A);  /* MIC1 PGA: +30dB */
+    ret |= es7243e_write_reg(0x21, 0x1A);  /* MIC2 PGA: +30dB */
 
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "ES7243E register init failed (err=%d)", ret);

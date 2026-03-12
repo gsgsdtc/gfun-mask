@@ -18,6 +18,11 @@
 		AA000073 /* AudioFileWriter.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000063 /* AudioFileWriter.swift */; };
 		AA000074 /* AudioPlayer.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000064 /* AudioPlayer.swift */; };
 		AA000075 /* Recording.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000065 /* Recording.swift */; };
+		AA0000A0 /* ChatMessage.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000082 /* ChatMessage.swift */; };
+		AA0000A1 /* PipecatWebSocketClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000083 /* PipecatWebSocketClient.swift */; };
+		AA0000A2 /* TtsAudioPlayer.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000084 /* TtsAudioPlayer.swift */; };
+		AA0000A3 /* VoiceChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000085 /* VoiceChatView.swift */; };
+		AA0000A4 /* VoiceChatViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000086 /* VoiceChatViewModel.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -34,6 +39,11 @@
 		AA000063 /* AudioFileWriter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioFileWriter.swift; sourceTree = "<group>"; };
 		AA000064 /* AudioPlayer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioPlayer.swift; sourceTree = "<group>"; };
 		AA000065 /* Recording.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Recording.swift; sourceTree = "<group>"; };
+		AA000082 /* ChatMessage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatMessage.swift; sourceTree = "<group>"; };
+		AA000083 /* PipecatWebSocketClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PipecatWebSocketClient.swift; sourceTree = "<group>"; };
+		AA000084 /* TtsAudioPlayer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TtsAudioPlayer.swift; sourceTree = "<group>"; };
+		AA000085 /* VoiceChatView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceChatView.swift; sourceTree = "<group>"; };
+		AA000086 /* VoiceChatViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceChatViewModel.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -55,6 +65,7 @@
 				AA000032 /* BLE */,
 				AA000080 /* Audio */,
 				AA000081 /* Models */,
+				AA000087 /* VoiceChat */,
 				AA000049 /* Assets.xcassets */,
 				AA000048 /* Info.plist */,
 			);
@@ -96,6 +107,18 @@
 				AA000065 /* Recording.swift */,
 			);
 			path = Models;
+			sourceTree = "<group>";
+		};
+		AA000087 /* VoiceChat */ = {
+			isa = PBXGroup;
+			children = (
+				AA000082 /* ChatMessage.swift */,
+				AA000083 /* PipecatWebSocketClient.swift */,
+				AA000084 /* TtsAudioPlayer.swift */,
+				AA000085 /* VoiceChatView.swift */,
+				AA000086 /* VoiceChatViewModel.swift */,
+			);
+			path = VoiceChat;
 			sourceTree = "<group>";
 		};
 		AA000099 = {
@@ -186,6 +209,11 @@
 				AA000073 /* AudioFileWriter.swift in Sources */,
 				AA000074 /* AudioPlayer.swift in Sources */,
 				AA000075 /* Recording.swift in Sources */,
+				AA0000A0 /* ChatMessage.swift in Sources */,
+				AA0000A1 /* PipecatWebSocketClient.swift in Sources */,
+				AA0000A2 /* TtsAudioPlayer.swift in Sources */,
+				AA0000A3 /* VoiceChatView.swift in Sources */,
+				AA0000A4 /* VoiceChatViewModel.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

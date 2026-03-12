@@ -24,6 +24,13 @@
 	<true/>
 	<key>NSBluetoothAlwaysUsageDescription</key>
 	<string>需要蓝牙权限以连接 VoiceMask 外设并接收语音助手消息。</string>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+		<key>NSAllowsArbitraryLoads</key>
+		<true/>
+	</dict>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>
