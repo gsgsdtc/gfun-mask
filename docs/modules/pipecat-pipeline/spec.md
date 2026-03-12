@@ -1,8 +1,8 @@
 # Module Spec: pipecat-pipeline
 
 > 模块：Pipecat WebSocket 语音处理管道
-> 最近同步：2026-03-11
-> 状态：Phase 1 完成（STT + LLM + TTS 全链路验证通过）
+> 最近同步：2026-03-12
+> 状态：Phase 3 完成（iOS 语音聊天全链路验证通过）
 
 ---
 
@@ -278,8 +278,8 @@ on iOSPingFrame:
 | `start` + PCM 帧 + `stop` → STT 识别结果非空 | ✅ |
 | STT 结果 → LLM → `transcript_final` + `llm_done` 事件 | ✅ |
 | LLM 回复 → TTS → `tts_start` + MP3 帧 + `tts_end` 事件 | ✅ |
-| iOS 客户端 MP3 播放正常 | 待验证 |
-| 多轮对话历史保持 | 待验证 |
+| iOS 客户端 MP3 播放正常 | ✅ |
+| 多轮对话历史保持 | ✅ |
 
 ---
 
@@ -294,3 +294,4 @@ on iOSPingFrame:
 | 2026-03-11 | fix | 修复 StartFrame 不经序列化器，改为直接发送 ready 消息 |
 | 2026-03-11 | fix | 修复 pong 帧方向错误，改用 OutputTransportMessageUrgentFrame |
 | 2026-03-11 | fix | 修复 InputAudioRawFrame 异步队列时序问题，引入 iOSAudioFrame 绕过队列 |
+| 2026-03-12 | feat #03 | Phase 3 完成，iOS 全链路验证通过（STT/LLM/TTS + iOS 气泡展示） |
