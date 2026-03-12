@@ -8,12 +8,15 @@
 from __future__ import annotations
 
 import json
-import logging
 import sys
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 import uvicorn
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.websockets import WebSocket
 
 from pipecat.frames.frames import (
@@ -49,6 +52,9 @@ from pipecat.transports.websocket.fastapi import (
 )
 from config import Config, DASHSCOPE_BASE_URL
 from dashscope_services import DashScopeSTTService, DashScopeTTSService
+from latency import LatencyRecord, LatencyTracker
+import db as db_module
+import admin_api
 
 # ── 日志配置：在所有 pipecat 导入完成后设置，避免被 pipecat 内部 logger.remove() 覆盖 ──
 from loguru import logger
@@ -147,9 +153,14 @@ class PingHandler(FrameProcessor):
 # ──────────────────────────────────────────────
 
 class TranscriptForwarder(FrameProcessor):
+    def __init__(self, record: LatencyRecord, **kwargs):
+        super().__init__(**kwargs)
+        self._record = record
+
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
         if isinstance(frame, TranscriptionFrame):
+            self._record.user_text = frame.text
             msg = json.dumps({"type": "transcript_final", "text": frame.text})
             logger.info(f"[TranscriptForwarder] → transcript_final: '{frame.text}'")
             await self.push_frame(OutputTransportMessageUrgentFrame(message=msg))
@@ -174,13 +185,18 @@ class TranscriptForwarder(FrameProcessor):
 # ──────────────────────────────────────────────
 
 class TTSAudioForwarder(FrameProcessor):
-    def __init__(self):
-        super().__init__()
+    def __init__(self, record: LatencyRecord, **kwargs):
+        super().__init__(**kwargs)
+        self._record = record
         self._llm_text_buffer: list[str] = []
+        self._tts_audio_received = False
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
         if isinstance(frame, TTSAudioRawFrame):
+            if not self._tts_audio_received:
+                self._record.tts_ttfa = time.monotonic()
+                self._tts_audio_received = True
             data = bytes([TTS_AUDIO_PREFIX]) + frame.audio
             logger.debug(f"[TTSForwarder] → tts_audio binary: {len(frame.audio)} bytes MP3")
             await self.push_frame(OutputTransportMessageUrgentFrame(message=data))
@@ -188,15 +204,24 @@ class TTSAudioForwarder(FrameProcessor):
             logger.info("[TTSForwarder] → tts_start")
             await self.push_frame(OutputTransportMessageUrgentFrame(message=json.dumps({"type": "tts_start"})))
         elif isinstance(frame, TTSStoppedFrame):
+            self._record.tts_end = time.monotonic()
+            self._tts_audio_received = False  # 重置，为下一轮准备
             logger.info("[TTSForwarder] → tts_end")
             await self.push_frame(OutputTransportMessageUrgentFrame(message=json.dumps({"type": "tts_end"})))
+            if self._record.on_complete:
+                await self._record.on_complete(self._record)
         elif isinstance(frame, TextFrame):
+            # 首个 TextFrame 记录 LLM 首包时间
+            if self._record.llm_ttft is None:
+                self._record.llm_ttft = time.monotonic()
             # 累积 LLM 文本块，不立即发送（避免每 token 发一条 llm_done）
             self._llm_text_buffer.append(frame.text)
             await self.push_frame(frame, direction)  # 继续传递给 context_aggregator.assistant()
         elif isinstance(frame, LLMFullResponseEndFrame):
+            self._record.llm_end = time.monotonic()
             # LLM 生成结束，发送完整回复文本
             full_text = "".join(self._llm_text_buffer)
+            self._record.ai_text = full_text
             self._llm_text_buffer.clear()
             if full_text:
                 msg = json.dumps({"type": "llm_done", "text": full_text})
@@ -211,7 +236,27 @@ class TTSAudioForwarder(FrameProcessor):
 # FastAPI 应用
 # ──────────────────────────────────────────────
 
-app = FastAPI(title="VoiceMask Pipecat Server")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    conn = await db_module.get_connection()
+    try:
+        await db_module.init_db(conn)
+    finally:
+        await conn.close()
+    logger.info("[Main] 数据库初始化完成")
+    yield
+
+
+app = FastAPI(title="VoiceMask Pipecat Server", lifespan=lifespan)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_methods=["GET"],
+    allow_headers=["*"],
+)
+
+app.include_router(admin_api.router)
 
 
 @app.websocket("/ws")
@@ -233,11 +278,48 @@ async def websocket_endpoint(websocket: WebSocket):
         model=Config.LLM_MODEL,
     )
 
+    # 延迟记录（本次会话共享）
+    record = LatencyRecord()
+
+    async def _on_complete(rec: LatencyRecord) -> None:
+        rec.emit_log()
+        data = {
+            "session_id": rec.session_id,
+            "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "user_text": rec.user_text,
+            "ai_text": rec.ai_text,
+            "asr_ttfa_ms": rec.asr_ttfa_ms,
+            "asr_total_ms": rec.asr_total_ms,
+            "llm_ttft_ms": rec.llm_ttft_ms,
+            "llm_total_ms": rec.llm_total_ms,
+            "tts_ttfa_ms": rec.tts_ttfa_ms,
+            "tts_total_ms": rec.tts_total_ms,
+            "e2e_ttfa_ms": rec.e2e_ttfa_ms,
+        }
+        try:
+            conn = await db_module.get_connection()
+            try:
+                await db_module.insert_conversation(conn, data)
+            finally:
+                await conn.close()
+        except Exception as e:
+            logger.error(f"[Main] 写入对话记录失败: {e}")
+        # 重置 record 状态以备下次请求
+        rec.stop_time = None
+        rec.asr_start = rec.asr_first = rec.asr_end = None
+        rec.llm_ttft = rec.llm_end = None
+        rec.tts_ttfa = rec.tts_end = None
+        rec.user_text = ""
+        rec.ai_text = ""
+
+    record.on_complete = _on_complete
+
     # STT：阿里云 Paraformer
     stt = DashScopeSTTService(
         api_key=Config.DASHSCOPE_API_KEY,
         model=Config.STT_MODEL,
         audio_passthrough=False,  # 不将音频帧传递到下游
+        record=record,
     )
 
     # TTS：阿里云 CosyVoice
@@ -255,11 +337,14 @@ async def websocket_endpoint(websocket: WebSocket):
     # Ping 处理器
     ping_handler = PingHandler()
 
+    # 延迟跟踪器（拦截 VADUserStoppedSpeakingFrame 记录 stop_time）
+    latency_tracker = LatencyTracker(record=record)
+
     # STT 转录转发器（必须在 context_aggregator.user() 之前）
-    transcript_forwarder = TranscriptForwarder()
+    transcript_forwarder = TranscriptForwarder(record=record)
 
     # TTS 帧转发器（MP3 + tts_start/end + llm_done）
-    tts_forwarder = TTSAudioForwarder()
+    tts_forwarder = TTSAudioForwarder(record=record)
 
     # Pipecat 管道
     pipeline = Pipeline([
@@ -268,6 +353,7 @@ async def websocket_endpoint(websocket: WebSocket):
                                       #   "start" → VADUserStartedSpeakingFrame
                                       #   "stop"  → VADUserStoppedSpeakingFrame
         ping_handler,                 # iOSPingFrame → pong，其余帧透传
+        latency_tracker,              # 拦截 VADUserStoppedSpeakingFrame → stop_time
         stt,                          # STT：InputAudioRawFrame 累积 → TranscriptionFrame
         transcript_forwarder,         # TranscriptionFrame → transcript_final 发给 iOS，同时继续下传
         context_aggregator.user(),    # 将识别文本加入对话上下文（消费 TranscriptionFrame）
