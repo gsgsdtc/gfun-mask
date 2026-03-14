@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Optional
 import aiosqlite
 from loguru import logger
 
-DB_PATH = os.path.join(os.path.dirname(__file__), "voicemask.db")
+DB_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "voicemask.db")
 
 _CREATE_TABLE = """
 CREATE TABLE IF NOT EXISTS conversations (

@@ -18,7 +18,7 @@ class TestLatencyRecordComputed:
     # @context 若 to_ms() 或派生计算错误，DB 中存储的耗时数据将失真，
     #          开发者无法判断真实瓶颈所在
     def test_asr_total_ms_computed(self):
-        from latency import LatencyRecord
+        from core.latency import LatencyRecord
         r = LatencyRecord(session_id="test-1")
         t0 = time.monotonic()
         r.asr_start = t0
@@ -30,7 +30,7 @@ class TestLatencyRecordComputed:
     # @context 批量 ASR 无真正首包概念，首包=总耗时；
     #          字段保留为流式升级预留，当前必须与 total 相等
     def test_asr_ttfa_ms_equals_total_in_batch_mode(self):
-        from latency import LatencyRecord
+        from core.latency import LatencyRecord
         r = LatencyRecord(session_id="test-2")
         t0 = time.monotonic()
         r.asr_start = t0
@@ -42,7 +42,7 @@ class TestLatencyRecordComputed:
     # @purpose 验证 llm_ttft_ms 正确计算（从 STT 返回到首 Token）
     # @context LLM TTFT 是用户感知延迟的关键分量；若计算基准点错误会误导优化方向
     def test_llm_ttft_ms_computed(self):
-        from latency import LatencyRecord
+        from core.latency import LatencyRecord
         r = LatencyRecord(session_id="test-3")
         t0 = time.monotonic()
         r.asr_end = t0
@@ -54,7 +54,7 @@ class TestLatencyRecordComputed:
     # @context 整体首包时间是用户可感知延迟的核心指标；
     #          计算错误会导致优化目标（降低 e2e）无法正确衡量
     def test_e2e_ttfa_ms_computed(self):
-        from latency import LatencyRecord
+        from core.latency import LatencyRecord
         r = LatencyRecord(session_id="test-4")
         t0 = time.monotonic()
         r.stop_time = t0
@@ -66,7 +66,7 @@ class TestLatencyRecordComputed:
     # @context 管道中间某环节失败（如 STT 空结果）时，部分字段可能未被赋值；
     #          此时应优雅返回 None 而非崩溃
     def test_missing_fields_return_none(self):
-        from latency import LatencyRecord
+        from core.latency import LatencyRecord
         r = LatencyRecord(session_id="test-5")
         assert r.asr_total_ms is None
         assert r.llm_ttft_ms is None
@@ -77,7 +77,7 @@ class TestLatencyRecordComputed:
     # @context 日志摘要是开发者实时监控的主要手段；
     #          格式缺少字段会导致无法快速定位慢请求的瓶颈环节
     def test_log_summary_contains_key_fields(self):
-        from latency import LatencyRecord
+        from core.latency import LatencyRecord
         r = LatencyRecord(session_id="abcdefgh-1234")
         t0 = time.monotonic()
         r.stop_time = t0
@@ -101,7 +101,7 @@ class TestLatencyTracker:
     # @context stop_time 是 e2e_ttfa 计算的起点；若未被捕获，整体首包时间将无法计算
     @pytest.mark.asyncio
     async def test_intercepts_vad_stopped_frame(self):
-        from latency import LatencyRecord, LatencyTracker
+        from core.latency import LatencyRecord, LatencyTracker
         from pipecat.frames.frames import VADUserStoppedSpeakingFrame
         from pipecat.processors.frame_processor import FrameDirection
 
@@ -121,7 +121,7 @@ class TestLatencyTracker:
     #          若误拦截其他帧会导致管道中断
     @pytest.mark.asyncio
     async def test_passes_through_other_frames(self):
-        from latency import LatencyRecord, LatencyTracker
+        from core.latency import LatencyRecord, LatencyTracker
         from pipecat.frames.frames import VADUserStartedSpeakingFrame
         from pipecat.processors.frame_processor import FrameDirection
 

@@ -24,7 +24,7 @@ def _make_record(i: int, today: str) -> dict:
         "asr_ttfa_ms": 300, "asr_total_ms": 300,
         "llm_ttft_ms": 450, "llm_total_ms": 1100,
         "tts_ttfa_ms": 200, "tts_total_ms": 850,
-        "e2e_ttfa_ms": 950,
+        "e2e_ttfa_ms": 950, "e2e_total_ms": 1200,
     }
 
 
@@ -35,8 +35,8 @@ def client_with_db():
     将 admin_api 中的 get_db_conn 替换为返回内存 DB 的依赖。
     """
     import asyncio
-    import db as db_module
-    import admin_api
+    from core import db as db_module
+    from api import admin as admin_api
 
     loop = asyncio.new_event_loop()
     conn = loop.run_until_complete(aiosqlite.connect(":memory:"))
