@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 @pytest_asyncio.fixture
 async def db():
     """每个测试使用独立的 in-memory SQLite 连接。"""
-    import db as db_module
+    from core import db as db_module
     conn = await aiosqlite.connect(":memory:")
     conn.row_factory = aiosqlite.Row
     await db_module.init_db(conn)
@@ -43,7 +43,7 @@ class TestInsertConversation:
     #          若写入失败或字段丢失，数据库将缺少关键性能数据
     @pytest.mark.asyncio
     async def test_insert_and_retrieve(self, db):
-        import db as db_module
+        from core import db as db_module
         row_id = await db_module.insert_conversation(db, {
             "session_id": "sess-001",
             "created_at": "2026-03-13T10:00:00Z",
@@ -56,6 +56,7 @@ class TestInsertConversation:
             "tts_ttfa_ms": 200,
             "tts_total_ms": 850,
             "e2e_ttfa_ms": 950,
+            "e2e_total_ms": 1200,
         })
         assert row_id == 1
 
@@ -69,7 +70,7 @@ class TestInsertConversation:
     # @context 管道中间出错时部分计时字段可能为 None；必须允许 null 插入否则会丢失数据
     @pytest.mark.asyncio
     async def test_insert_with_null_fields(self, db):
-        import db as db_module
+        from core import db as db_module
         row_id = await db_module.insert_conversation(db, {
             "session_id": "sess-002",
             "created_at": "2026-03-13T10:01:00Z",
@@ -82,6 +83,7 @@ class TestInsertConversation:
             "tts_ttfa_ms": None,
             "tts_total_ms": None,
             "e2e_ttfa_ms": None,
+            "e2e_total_ms": None,
         })
         row = await db_module.get_conversation_by_id(db, row_id)
         assert row["e2e_ttfa_ms"] is None
@@ -93,7 +95,7 @@ class TestGetConversations:
     # @context Admin 对话列表页依赖分页接口；若 total 错误或排序反向，用户看到的数据顺序混乱
     @pytest.mark.asyncio
     async def test_pagination_and_order(self, db):
-        import db as db_module
+        from core import db as db_module
         for i in range(5):
             await db_module.insert_conversation(db, {
                 "session_id": f"sess-{i}",
@@ -101,7 +103,7 @@ class TestGetConversations:
                 "user_text": f"msg {i}", "ai_text": f"reply {i}",
                 "asr_ttfa_ms": 300, "asr_total_ms": 300,
                 "llm_ttft_ms": 450, "llm_total_ms": 1100,
-                "tts_ttfa_ms": 200, "tts_total_ms": 850, "e2e_ttfa_ms": 950,
+                "tts_ttfa_ms": 200, "tts_total_ms": 850, "e2e_ttfa_ms": 950, "e2e_total_ms": 1200,
             })
 
         result = await db_module.get_conversations(db, page=1, size=3)
@@ -115,7 +117,7 @@ class TestGetConversations:
     # @context 分页偏移计算错误会导致某些记录永远不出现在列表中
     @pytest.mark.asyncio
     async def test_second_page(self, db):
-        import db as db_module
+        from core import db as db_module
         for i in range(5):
             await db_module.insert_conversation(db, {
                 "session_id": f"sess-{i}",
@@ -123,7 +125,7 @@ class TestGetConversations:
                 "user_text": f"msg {i}", "ai_text": "",
                 "asr_ttfa_ms": None, "asr_total_ms": None,
                 "llm_ttft_ms": None, "llm_total_ms": None,
-                "tts_ttfa_ms": None, "tts_total_ms": None, "e2e_ttfa_ms": None,
+                "tts_ttfa_ms": None, "tts_total_ms": None, "e2e_ttfa_ms": None, "e2e_total_ms": None,
             })
         result = await db_module.get_conversations(db, page=2, size=3)
         assert len(result["items"]) == 2
@@ -135,7 +137,7 @@ class TestGetStats:
     # @context Admin 概览页的统计卡片依赖此接口；数据不准确会误导开发者的优化决策
     @pytest.mark.asyncio
     async def test_stats_today_count_and_avg(self, db):
-        import db as db_module
+        from core import db as db_module
         today = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         for _ in range(3):
             await db_module.insert_conversation(db, {
@@ -143,7 +145,7 @@ class TestGetStats:
                 "user_text": "hi", "ai_text": "hello",
                 "asr_ttfa_ms": 300, "asr_total_ms": 300,
                 "llm_ttft_ms": 400, "llm_total_ms": 1000,
-                "tts_ttfa_ms": 200, "tts_total_ms": 800, "e2e_ttfa_ms": 900,
+                "tts_ttfa_ms": 200, "tts_total_ms": 800, "e2e_ttfa_ms": 900, "e2e_total_ms": 1100,
             })
         stats = await db_module.get_stats(db)
         assert stats["today_count"] == 3
@@ -156,7 +158,7 @@ class TestGetStats:
     # @context 概览页展示最近 5 条对话；若超出 5 条会使页面布局溢出
     @pytest.mark.asyncio
     async def test_stats_recent_max_5(self, db):
-        import db as db_module
+        from core import db as db_module
         today = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         for i in range(7):
             await db_module.insert_conversation(db, {
@@ -164,7 +166,7 @@ class TestGetStats:
                 "user_text": f"hi{i}", "ai_text": "hello",
                 "asr_ttfa_ms": 300, "asr_total_ms": 300,
                 "llm_ttft_ms": 400, "llm_total_ms": 1000,
-                "tts_ttfa_ms": 200, "tts_total_ms": 800, "e2e_ttfa_ms": 900,
+                "tts_ttfa_ms": 200, "tts_total_ms": 800, "e2e_ttfa_ms": 900, "e2e_total_ms": 1100,
             })
         stats = await db_module.get_stats(db)
         assert len(stats["recent"]) == 5
@@ -176,6 +178,6 @@ class TestGetConversationById:
     # @context admin_api.py 需要判断 None 并返回 404；若抛出异常会变成 500 错误
     @pytest.mark.asyncio
     async def test_not_found_returns_none(self, db):
-        import db as db_module
+        from core import db as db_module
         row = await db_module.get_conversation_by_id(db, 999)
         assert row is None

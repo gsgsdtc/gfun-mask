@@ -8,7 +8,7 @@
 
 import pytest
 import json
-from protocol import (
+from core.protocol import (
     encode_json,
     decode_message,
     encode_tts_audio,

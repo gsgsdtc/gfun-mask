@@ -10,7 +10,7 @@ from typing import AsyncGenerator
 import aiosqlite
 from fastapi import APIRouter, Depends, HTTPException
 
-import db as db_module
+from core import db as db_module
 
 router = APIRouter(prefix="/api/admin")
 
