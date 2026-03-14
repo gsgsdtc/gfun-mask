@@ -17,7 +17,7 @@ from typing import AsyncGenerator, Optional
 import dashscope
 from loguru import logger
 
-from latency import LatencyRecord
+from core.latency import LatencyRecord
 
 from pipecat.frames.frames import (
     AudioRawFrame,
