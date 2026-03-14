@@ -15,6 +15,7 @@ export interface ConversationSummary {
   user_text: string
   ai_text: string
   e2e_ttfa_ms: number | null
+  e2e_total_ms: number | null
 }
 
 export interface ConversationsResponse {

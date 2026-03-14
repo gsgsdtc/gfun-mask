@@ -55,20 +55,21 @@ export default function Conversations() {
               <th className="px-5 py-3 text-left">用户说</th>
               <th className="px-5 py-3 text-left">AI 回复</th>
               <th className="px-5 py-3 text-right">首包时间</th>
+              <th className="px-5 py-3 text-right">总时间</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-50">
             {items === null ? (
               [...Array(5)].map((_, i) => (
                 <tr key={i}>
-                  <td colSpan={4} className="px-5 py-3">
+                  <td colSpan={5} className="px-5 py-3">
                     <div className="h-4 bg-gray-100 rounded animate-pulse" />
                   </td>
                 </tr>
               ))
             ) : items.length === 0 ? (
               <tr>
-                <td colSpan={4} className="px-5 py-8 text-center text-gray-400">
+                <td colSpan={5} className="px-5 py-8 text-center text-gray-400">
                   暂无对话记录
                 </td>
               </tr>
@@ -84,6 +85,9 @@ export default function Conversations() {
                   <td className="px-5 py-3 text-gray-500">{truncate(r.ai_text)}</td>
                   <td className={`px-5 py-3 text-right font-mono ${(r.e2e_ttfa_ms ?? 0) > 1000 ? 'text-red-500' : 'text-gray-600'}`}>
                     {fmt(r.e2e_ttfa_ms)}
+                  </td>
+                  <td className="px-5 py-3 text-right font-mono text-gray-500">
+                    {fmt(r.e2e_total_ms)}
                   </td>
                 </tr>
               ))

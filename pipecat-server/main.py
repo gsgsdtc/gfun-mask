@@ -175,20 +175,46 @@ class TranscriptForwarder(FrameProcessor):
 
 
 # ──────────────────────────────────────────────
+# LLM 文本捕获器
+# 放在 llm 和 tts 之间，在 TTS 消费 TextFrame 之前拦截。
+# 负责：llm_ttft / llm_end 计时、ai_text 累积、llm_done 消息发送。
+# ──────────────────────────────────────────────
+
+class LLMTextCapture(FrameProcessor):
+    def __init__(self, record: LatencyRecord, **kwargs):
+        super().__init__(**kwargs)
+        self._record = record
+        self._buffer: list[str] = []
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        await super().process_frame(frame, direction)
+        if isinstance(frame, TextFrame):
+            if self._record.llm_ttft is None:
+                self._record.llm_ttft = time.monotonic()
+            self._buffer.append(frame.text)
+        elif isinstance(frame, LLMFullResponseEndFrame):
+            self._record.llm_end = time.monotonic()
+            full_text = "".join(self._buffer)
+            self._record.ai_text = full_text
+            self._buffer.clear()
+            if full_text:
+                msg = json.dumps({"type": "llm_done", "text": full_text})
+                logger.info(f"[LLMCapture] → llm_done: '{full_text[:60]}' ({len(full_text)} chars)")
+                await self.push_frame(OutputTransportMessageUrgentFrame(message=msg))
+        await self.push_frame(frame, direction)
+
+
+# ──────────────────────────────────────────────
 # TTS 帧转发器
-# 放在 tts 之后，处理 TTS 相关帧 + LLM 完整回复。
+# 放在 tts 之后，处理 TTS 音频帧。
 # Pipecat 传输层只处理 OutputTransportMessageUrgentFrame，
 # 其他帧会被静默丢弃，此处统一包装。
-#
-# llm_done 处理：LLM 每个 token 产生一个 TextFrame，需累积后
-# 在 LLMFullResponseEndFrame 时一次性发送，避免重复消息。
 # ──────────────────────────────────────────────
 
 class TTSAudioForwarder(FrameProcessor):
     def __init__(self, record: LatencyRecord, **kwargs):
         super().__init__(**kwargs)
         self._record = record
-        self._llm_text_buffer: list[str] = []
         self._tts_audio_received = False
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
@@ -210,24 +236,6 @@ class TTSAudioForwarder(FrameProcessor):
             await self.push_frame(OutputTransportMessageUrgentFrame(message=json.dumps({"type": "tts_end"})))
             if self._record.on_complete:
                 await self._record.on_complete(self._record)
-        elif isinstance(frame, TextFrame):
-            # 首个 TextFrame 记录 LLM 首包时间
-            if self._record.llm_ttft is None:
-                self._record.llm_ttft = time.monotonic()
-            # 累积 LLM 文本块，不立即发送（避免每 token 发一条 llm_done）
-            self._llm_text_buffer.append(frame.text)
-            await self.push_frame(frame, direction)  # 继续传递给 context_aggregator.assistant()
-        elif isinstance(frame, LLMFullResponseEndFrame):
-            self._record.llm_end = time.monotonic()
-            # LLM 生成结束，发送完整回复文本
-            full_text = "".join(self._llm_text_buffer)
-            self._record.ai_text = full_text
-            self._llm_text_buffer.clear()
-            if full_text:
-                msg = json.dumps({"type": "llm_done", "text": full_text})
-                logger.info(f"[TTSForwarder] → llm_done (full): '{full_text[:60]}' ({len(full_text)} chars)")
-                await self.push_frame(OutputTransportMessageUrgentFrame(message=msg))
-            await self.push_frame(frame, direction)
         else:
             await self.push_frame(frame, direction)
 
@@ -295,6 +303,7 @@ async def websocket_endpoint(websocket: WebSocket):
             "tts_ttfa_ms": rec.tts_ttfa_ms,
             "tts_total_ms": rec.tts_total_ms,
             "e2e_ttfa_ms": rec.e2e_ttfa_ms,
+            "e2e_total_ms": rec.e2e_total_ms,
         }
         try:
             conn = await db_module.get_connection()
@@ -343,7 +352,10 @@ async def websocket_endpoint(websocket: WebSocket):
     # STT 转录转发器（必须在 context_aggregator.user() 之前）
     transcript_forwarder = TranscriptForwarder(record=record)
 
-    # TTS 帧转发器（MP3 + tts_start/end + llm_done）
+    # LLM 文本捕获器（必须在 tts 之前，TTS 会消费 TextFrame 不再下传）
+    llm_text_capture = LLMTextCapture(record=record)
+
+    # TTS 帧转发器（MP3 + tts_start/end）
     tts_forwarder = TTSAudioForwarder(record=record)
 
     # Pipecat 管道
@@ -358,8 +370,9 @@ async def websocket_endpoint(websocket: WebSocket):
         transcript_forwarder,         # TranscriptionFrame → transcript_final 发给 iOS，同时继续下传
         context_aggregator.user(),    # 将识别文本加入对话上下文（消费 TranscriptionFrame）
         llm,                          # LLM：生成回复（TextFrame × N + LLMFullResponseEndFrame）
+        llm_text_capture,             # 拦截 TextFrame → llm_ttft/ai_text/llm_done（TTS 消费前）
         tts,                          # TTS：文字 → 音频（MP3）
-        tts_forwarder,                # tts_start/audio/end + llm_done → OutputTransportMessageUrgentFrame
+        tts_forwarder,                # tts_start/audio/end → OutputTransportMessageUrgentFrame
         transport.output(),           # 序列化 → WebSocket 输出
         context_aggregator.assistant(),  # 将 AI 回复加入对话历史
     ])

@@ -85,6 +85,10 @@ class LatencyRecord:
     def e2e_ttfa_ms(self) -> Optional[int]:
         return _ms(self.stop_time, self.tts_ttfa)
 
+    @property
+    def e2e_total_ms(self) -> Optional[int]:
+        return _ms(self.stop_time, self.tts_end)
+
     # ── 日志摘要 ────────────────────────────────────────────────
 
     def log_summary(self) -> str:
@@ -98,7 +102,7 @@ class LatencyRecord:
             f"ASR_ttfa={fmt(self.asr_ttfa_ms)} | ASR={fmt(self.asr_total_ms)} | "
             f"LLM_TTFT={fmt(self.llm_ttft_ms)} | LLM={fmt(self.llm_total_ms)} | "
             f"TTS_ttfa={fmt(self.tts_ttfa_ms)} | TTS={fmt(self.tts_total_ms)} | "
-            f"E2E_ttfa={fmt(self.e2e_ttfa_ms)}"
+            f"E2E_ttfa={fmt(self.e2e_ttfa_ms)} | E2E_total={fmt(self.e2e_total_ms)}"
         )
 
     def emit_log(self) -> None:

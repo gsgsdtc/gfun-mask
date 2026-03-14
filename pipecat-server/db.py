@@ -27,7 +27,8 @@ CREATE TABLE IF NOT EXISTS conversations (
     llm_total_ms INTEGER,
     tts_ttfa_ms  INTEGER,
     tts_total_ms INTEGER,
-    e2e_ttfa_ms  INTEGER
+    e2e_ttfa_ms  INTEGER,
+    e2e_total_ms INTEGER
 );
 """
 _CREATE_INDEX = "CREATE INDEX IF NOT EXISTS idx_created_at ON conversations(created_at DESC);"
@@ -37,6 +38,12 @@ async def init_db(conn: aiosqlite.Connection) -> None:
     """建表 + 建索引，幂等。"""
     await conn.execute(_CREATE_TABLE)
     await conn.execute(_CREATE_INDEX)
+    # 迁移：为旧版数据库添加新列
+    try:
+        await conn.execute("ALTER TABLE conversations ADD COLUMN e2e_total_ms INTEGER")
+        logger.debug("[DB] 迁移：添加 e2e_total_ms 列")
+    except Exception:
+        pass  # 列已存在则忽略
     await conn.commit()
     logger.debug("[DB] conversations 表已就绪")
 
@@ -57,13 +64,13 @@ async def insert_conversation(conn: aiosqlite.Connection, data: Dict[str, Any]) 
              asr_ttfa_ms, asr_total_ms,
              llm_ttft_ms, llm_total_ms,
              tts_ttfa_ms, tts_total_ms,
-             e2e_ttfa_ms)
+             e2e_ttfa_ms, e2e_total_ms)
         VALUES
             (:session_id, :created_at, :user_text, :ai_text,
              :asr_ttfa_ms, :asr_total_ms,
              :llm_ttft_ms, :llm_total_ms,
              :tts_ttfa_ms, :tts_total_ms,
-             :e2e_ttfa_ms)
+             :e2e_ttfa_ms, :e2e_total_ms)
         """,
         data,
     )
@@ -83,7 +90,7 @@ async def get_conversations(
 
     async with conn.execute(
         """
-        SELECT id, created_at, user_text, ai_text, e2e_ttfa_ms
+        SELECT id, created_at, user_text, ai_text, e2e_ttfa_ms, e2e_total_ms
         FROM conversations
         ORDER BY created_at DESC
         LIMIT ? OFFSET ?
@@ -135,7 +142,7 @@ async def get_stats(conn: aiosqlite.Connection) -> Dict[str, Any]:
 
     async with conn.execute(
         """
-        SELECT id, created_at, user_text, ai_text, e2e_ttfa_ms
+        SELECT id, created_at, user_text, ai_text, e2e_ttfa_ms, e2e_total_ms
         FROM conversations
         ORDER BY created_at DESC
         LIMIT 5
