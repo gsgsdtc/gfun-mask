@@ -114,6 +114,32 @@ CONFIG_BT_NIMBLE_MSYS_1_BLOCK_SIZE=512  # 512-byte mbuf blocks
 - **Phase 3**: Pipecat integration (WebRTC, STT/LLM/TTS)
 - **Phase 4**: Background survival, phone call handling, ducking
 
+## Engineering Rules
+
+### 监控规则（Observability Rule）
+
+**所有接入 pipecat-server 的外部服务（STT / LLM / TTS 及未来新增服务）必须有对应的监控埋点。**
+
+具体要求：
+
+| 指标 | 要求 |
+|------|------|
+| 首包时间（TTFA/TTFT） | 必须记录（流式服务）；批量服务记录总耗时并保留字段供后续升级 |
+| 总响应时间 | 必须记录 |
+| 存储 | 写入 SQLite `conversations` 表对应字段 |
+| 日志 | 每次请求在 `[Latency]` 行输出对应耗时 |
+| 慢请求告警 | 任一环节超过 1000ms 输出 `WARNING` |
+
+**新服务接入 Checklist（设计阶段必须包含）**：
+- [ ] 在 `LatencyRecord` 中新增对应计时字段
+- [ ] 在 `db.py` / `conversations` 表新增对应列
+- [ ] 在 `/api/admin/stats` 响应中包含该服务的平均耗时
+- [ ] 在 Admin 详情页耗时分解面板中展示
+
+> 参考实现：`docs/modules/pipecat-pipeline/design/04-pipeline-latency-logging-backend-design.md`
+
+---
+
 ## Related Documentation
 
 - Epic: `docs/epic/epic-01.md` — Full product vision and milestones
