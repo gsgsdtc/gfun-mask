@@ -1,3 +1,6 @@
+# IDE
+.vscode/
+
 # ESP-IDF build artifacts
 firmware/build/
 firmware/managed_components/
