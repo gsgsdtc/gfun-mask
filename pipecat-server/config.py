@@ -24,7 +24,7 @@ class Config:
     STT_MODEL: str = os.getenv("STT_MODEL", "paraformer-v2")
 
     # LLM：通义千问
-    LLM_MODEL: str = os.getenv("LLM_MODEL", "qwen-turbo")
+    LLM_MODEL: str = os.getenv("LLM_MODEL", "qwen-turbo-latest")
     LLM_SYSTEM_PROMPT: str = os.getenv(
         "LLM_SYSTEM_PROMPT",
         "你是一个简洁友好的语音助手，请用中文回答，每次回复不超过50字。"
