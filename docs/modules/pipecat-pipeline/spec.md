@@ -1,8 +1,8 @@
 # Module Spec: pipecat-pipeline
 
 > 模块：Pipecat WebSocket 语音处理管道
-> 最近同步：2026-03-12
-> 状态：Phase 3 完成（iOS 语音聊天全链路验证通过）
+> 最近同步：2026-03-13
+> 状态：Phase 4 完成（延迟计量 + SQLite 持久化 + Admin REST API）
 
 ---
 
@@ -23,11 +23,12 @@
 
 | 组件 | 技术 | 说明 |
 |------|------|------|
-| Web 框架 | FastAPI + Uvicorn | 承载 WebSocket endpoint |
+| Web 框架 | FastAPI + Uvicorn | 承载 WebSocket endpoint 和 Admin REST API |
 | 管道框架 | pipecat-ai >= 0.0.100 | 语音处理流水线编排 |
 | STT | DashScope Paraformer (`paraformer-realtime-v2`) | 阿里云 ASR，批量识别 WAV 文件 |
 | LLM | DashScope Qwen（OpenAI 兼容接口，`qwen-turbo`） | 通义千问，生成回复 |
 | TTS | DashScope CosyVoice (`cosyvoice-v1`) | 阿里云 TTS，合成 MP3 |
+| 数据库 | SQLite + aiosqlite | 本地异步持久化，存储对话延迟记录 |
 
 ---
 
@@ -111,15 +112,18 @@ iOS                                     Pipecat Server
 ```
 pipecat-server/
 ├── main.py                  # FastAPI 应用、WebSocket endpoint、Pipeline 编排
-│   ├── iOSStartRecordingFrame   # 控制帧：开始录音
-│   ├── iOSStopRecordingFrame    # 控制帧：停止录音
 │   ├── iOSPingFrame             # 控制帧：心跳
-│   ├── iOSAudioFrame            # 音频帧（绕过 InputAudioRawFrame 异步队列）
 │   ├── iOSProtocolSerializer    # WebSocket ↔ Pipecat 帧序列化/反序列化
-│   └── iOSAudioAccumulator      # 音频累积器（start~stop 区间内收集 PCM）
+│   ├── PingHandler              # 心跳处理（ping → pong）
+│   ├── TranscriptForwarder      # STT 结果转发（记录 user_text）
+│   ├── LLMTextCapture           # LLM 文本拦截（llm_ttft/ai_text/llm_done，位于 TTS 之前）
+│   └── TTSAudioForwarder        # TTS 音频转发（tts_ttfa/tts_end，触发 on_complete）
 ├── dashscope_services.py    # DashScope STT / TTS Pipecat 服务封装
-│   ├── DashScopeSTTService      # Paraformer STT（PCM → WAV → 识别 → TranscriptionFrame）
+│   ├── DashScopeSTTService      # Paraformer STT（含 asr_start/asr_end 计时注入）
 │   └── DashScopeTTSService      # CosyVoice TTS（文本 → MP3 → TTSAudioRawFrame）
+├── latency.py               # 延迟计量：LatencyRecord（数据） + LatencyTracker（管道处理器）
+├── db.py                    # SQLite 持久化：conversations 表 CRUD + init/migration
+├── admin_api.py             # Admin REST API（FastAPI Router，挂载到主 app）
 └── config.py                # 环境变量读取（API Key、模型、服务器地址）
 ```
 
@@ -133,23 +137,35 @@ pipecat-server/
 WebSocket Input
     │  反序列化（iOSProtocolSerializer.deserialize）
     ▼
-iOSAudioAccumulator
-    │  start → UserStartedSpeakingFrame
-    │  audio → 累积 PCM
-    │  stop  → InputAudioRawFrame + UserStoppedSpeakingFrame
-    │  ping  → OutputTransportMessageUrgentFrame(pong) [直接下行]
+PingHandler
+    │  iOSPingFrame → pong；其余帧透传
+    ▼
+LatencyTracker
+    │  VADUserStoppedSpeakingFrame → record.stop_time
     ▼
 DashScopeSTTService
-    │  InputAudioRawFrame → 识别 → TranscriptionFrame
+    │  InputAudioRawFrame → record.asr_start → 识别 → record.asr_end → TranscriptionFrame
+    ▼
+TranscriptForwarder
+    │  TranscriptionFrame → record.user_text，发 transcript_final，继续下传
     ▼
 LLMContextAggregator (user)
-    │  TranscriptionFrame → 加入对话历史
+    │  TranscriptionFrame → 加入对话历史（消费帧）
     ▼
 QwenLLMService
-    │  LLMContext → 调用 Qwen API → TextFrame / LLMFullResponseEndFrame
+    │  LLMContext → 调用 Qwen API → TextFrame×N + LLMFullResponseEndFrame
+    ▼
+LLMTextCapture                          ← 必须在 TTS 之前！TTS 消费 TextFrame 不再下传
+    │  TextFrame → record.llm_ttft（首包），累积 ai_text
+    │  LLMFullResponseEndFrame → record.llm_end，发 llm_done，继续下传
     ▼
 DashScopeTTSService
     │  TextFrame → 合成 → TTSStartedFrame + TTSAudioRawFrame×N + TTSStoppedFrame
+    ▼
+TTSAudioForwarder
+    │  TTSAudioRawFrame → record.tts_ttfa（首帧），发二进制音频
+    │  TTSStartedFrame → 发 tts_start
+    │  TTSStoppedFrame → record.tts_end，发 tts_end，触发 on_complete
     ▼
 WebSocket Output
     │  序列化（iOSProtocolSerializer.serialize）
@@ -158,7 +174,68 @@ LLMContextAggregator (assistant)
     │  AI 回复加入对话历史
 ```
 
-### 4.2 关键帧映射
+### 4.2 延迟计量接口（LatencyRecord）
+
+每次语音请求创建一个共享 `LatencyRecord` 实例，由各处理器写入时间戳，`TTSStoppedFrame` 触发 `on_complete` 回调持久化。
+
+#### 时间戳字段（monotonic clock）
+
+| 字段 | 写入者 | 含义 |
+|------|-------|------|
+| `stop_time` | `LatencyTracker` | VADUserStoppedSpeakingFrame 到达时刻 |
+| `asr_start` | `DashScopeSTTService` | `run_stt()` 进入 |
+| `asr_end` / `asr_first` | `DashScopeSTTService` | 识别完成（批量模式两者相同） |
+| `llm_ttft` | `LLMTextCapture` | 首个 TextFrame 到达 |
+| `llm_end` | `LLMTextCapture` | LLMFullResponseEndFrame 到达 |
+| `tts_ttfa` | `TTSAudioForwarder` | 首个 TTSAudioRawFrame 到达 |
+| `tts_end` | `TTSAudioForwarder` | TTSStoppedFrame 到达 |
+
+#### 派生指标（property）
+
+| 属性 | 计算 | 含义 |
+|------|------|------|
+| `asr_ttfa_ms` | `asr_first - asr_start` | ASR 首包延迟 |
+| `asr_total_ms` | `asr_end - asr_start` | ASR 总耗时 |
+| `llm_ttft_ms` | `llm_ttft - asr_end` | LLM 首 token 延迟 |
+| `llm_total_ms` | `llm_end - asr_end` | LLM 总耗时 |
+| `tts_ttfa_ms` | `tts_ttfa - llm_ttft` | TTS 首帧延迟 |
+| `tts_total_ms` | `tts_end - llm_ttft` | TTS 总耗时 |
+| `e2e_ttfa_ms` | `tts_ttfa - stop_time` | 端到端首包延迟（核心指标） |
+| `e2e_total_ms` | `tts_end - stop_time` | 端到端总时间 |
+
+慢请求告警阈值：`SLOW_THRESHOLD_MS = 1000ms`（ASR / LLM_TTFT / TTS_ttfa / E2E 任一超过则输出 WARNING）
+
+### 4.3 Admin REST API
+
+挂载在主 FastAPI 应用，前缀 `/api/admin`。
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/api/admin/stats` | 今日对话数 + 各环节平均耗时 + 最近 5 条 |
+| GET | `/api/admin/conversations` | 分页对话列表（`?page=1&size=20`） |
+| GET | `/api/admin/conversations/{id}` | 单条完整对话记录 |
+
+### 4.4 数据模型（conversations 表）
+
+| 列 | 类型 | 说明 |
+|----|------|------|
+| `id` | INTEGER PK | 自增主键 |
+| `session_id` | TEXT | UUID，对应一次 WebSocket 会话的单次请求 |
+| `created_at` | TEXT | ISO 8601 UTC 时间（`%Y-%m-%dT%H:%M:%SZ`） |
+| `user_text` | TEXT | 用户语音识别文本 |
+| `ai_text` | TEXT | AI 完整回复文本 |
+| `asr_ttfa_ms` | INTEGER | ASR 首包延迟 ms |
+| `asr_total_ms` | INTEGER | ASR 总耗时 ms |
+| `llm_ttft_ms` | INTEGER | LLM 首 token 延迟 ms |
+| `llm_total_ms` | INTEGER | LLM 总耗时 ms |
+| `tts_ttfa_ms` | INTEGER | TTS 首帧延迟 ms |
+| `tts_total_ms` | INTEGER | TTS 总耗时 ms |
+| `e2e_ttfa_ms` | INTEGER | 端到端首包延迟 ms |
+| `e2e_total_ms` | INTEGER | 端到端总时间 ms |
+
+索引：`idx_created_at ON conversations(created_at DESC)`
+
+### 4.5 关键帧映射
 
 | Pipecat 帧 | 序列化输出 | 方向 |
 |-----------|-----------|------|
@@ -173,16 +250,17 @@ LLMContextAggregator (assistant)
 | `{"type":"stop"}` | → `iOSStopRecordingFrame` | 上行 |
 | `{"type":"ping"}` | → `iOSPingFrame` | 上行 |
 
-### 4.3 设计约束
+### 4.6 设计约束
 
 | 约束 | 说明 |
 |------|------|
 | `enable_rtvi=False` | 禁用 Pipecat 内置 RTVI 握手，否则无 RTVI 握手的客户端会被拒绝（触发 403） |
 | `allow_interruptions=False` | 禁用打断；TTS 播放期间 iOS 新录音不会中断当前管道 |
 | `audio_passthrough=False` | STT 服务不将音频帧透传下游，避免 `AudioRawFrame` 流入输出管道引发异常 |
-| `iOSAudioFrame` 绕过异步队列 | `InputAudioRawFrame` 会被输入 transport 路由至 `_audio_in_queue`（异步），导致 `stop` 帧先于音频帧到达累积器；`iOSAudioFrame(Frame)` 直接走同步管道，保证时序 |
 | `await websocket.accept()` 必须前置 | FastAPI WebSocket 未 accept 直接关闭会产生 403；须在创建 transport 之前 accept |
 | `ready` 直接发送 | `StartFrame` 经过 transport 的 `start()` 而非 `_write_frame()`，序列化器不会被调用；`ready` 须在 `on_client_connected` 中通过 `client.send_text()` 直接发送 |
+| `LLMTextCapture` 必须在 TTS 之前 | Pipecat TTS service 消费 `TextFrame` 不再下传；若放在 TTS 之后，`ai_text` 永远为空且 `llm_ttft` 无法记录 |
+| `lifespan` 替代 `@on_event("startup")` | FastAPI 0.103+ 中 `@app.on_event` 已废弃，使用 `@asynccontextmanager` lifespan |
 
 ---
 
@@ -213,43 +291,31 @@ LLMContextAggregator (assistant)
 
 ## 6. 核心逻辑
 
-### 6.1 音频累积（iOSAudioAccumulator）
+### 6.1 STT 处理（DashScopeSTTService）
 
-```
-on iOSStartRecordingFrame:
-    _audio_buffer.clear()
-    _recording = True
-    push(UserStartedSpeakingFrame)
+1. 记录 `record.asr_start = time.monotonic()`
+2. 将原始 PCM 封装为 WAV（写入临时文件）
+3. 在线程池中调用 `dashscope.audio.asr.Recognition.call(wav_path)`
+4. 提取 `output.sentence[].text` 拼接为完整识别结果
+5. 记录 `record.asr_end = record.asr_first = time.monotonic()`
+6. yield `TranscriptionFrame(text=result)`
 
-on iOSAudioFrame (recording=True):
-    _audio_buffer.append(frame.audio)
-
-on iOSStopRecordingFrame:
-    _recording = False
-    if _audio_buffer:
-        combined = join(_audio_buffer)
-        push(InputAudioRawFrame(audio=combined, sample_rate=16000))
-    _audio_buffer.clear()
-    push(UserStoppedSpeakingFrame)
-
-on iOSPingFrame:
-    push(OutputTransportMessageUrgentFrame(message='{"type":"pong"}'))
-```
-
-### 6.2 STT 处理（DashScopeSTTService）
-
-1. 将原始 PCM 封装为 WAV（写入临时文件）
-2. 在线程池中调用 `dashscope.audio.asr.Recognition.call(wav_path)`
-3. 提取 `output.sentence[].text` 拼接为完整识别结果
-4. yield `TranscriptionFrame(text=result)`
-
-### 6.3 TTS 处理（DashScopeTTSService）
+### 6.2 TTS 处理（DashScopeTTSService）
 
 1. 在线程池中调用 `dashscope.audio.tts_v2.SpeechSynthesizer.call(text)`
 2. 获取 MP3 字节
 3. yield `TTSStartedFrame`
 4. 按 4096 字节分块 yield `TTSAudioRawFrame`
 5. yield `TTSStoppedFrame`
+
+### 6.3 延迟记录完成回调（_on_complete）
+
+```
+on TTSStoppedFrame（TTSAudioForwarder 触发 on_complete）:
+    rec.emit_log()           # 输出延迟摘要 + 慢请求 WARNING
+    写入 conversations 表    # 含全部时间指标 + user_text + ai_text
+    重置 record 字段         # 为下一次请求复用同一 LatencyRecord 实例
+```
 
 ---
 
@@ -280,6 +346,9 @@ on iOSPingFrame:
 | LLM 回复 → TTS → `tts_start` + MP3 帧 + `tts_end` 事件 | ✅ |
 | iOS 客户端 MP3 播放正常 | ✅ |
 | 多轮对话历史保持 | ✅ |
+| 延迟日志输出（各环节耗时 + 慢请求告警） | ✅ |
+| 对话记录持久化到 SQLite | ✅ |
+| Admin REST API 可查询对话和统计 | ✅ |
 
 ---
 
@@ -295,3 +364,7 @@ on iOSPingFrame:
 | 2026-03-11 | fix | 修复 pong 帧方向错误，改用 OutputTransportMessageUrgentFrame |
 | 2026-03-11 | fix | 修复 InputAudioRawFrame 异步队列时序问题，引入 iOSAudioFrame 绕过队列 |
 | 2026-03-12 | feat #03 | Phase 3 完成，iOS 全链路验证通过（STT/LLM/TTS + iOS 气泡展示） |
+| 2026-03-13 | feat #04 | 新增延迟计量系统（LatencyRecord + LatencyTracker + LLMTextCapture） |
+| 2026-03-13 | feat #04 | 新增 SQLite 持久化（db.py，conversations 表，含 e2e_total_ms） |
+| 2026-03-13 | feat #04 | 新增 Admin REST API（/api/admin/stats + conversations CRUD） |
+| 2026-03-13 | fix | 修复 ai_text 为空：LLMTextCapture 移到 TTS 之前拦截 TextFrame |

@@ -11,10 +11,13 @@ import asyncio
 import os
 import struct
 import tempfile
-from typing import AsyncGenerator
+import time
+from typing import AsyncGenerator, Optional
 
 import dashscope
 from loguru import logger
+
+from core.latency import LatencyRecord
 
 from pipecat.frames.frames import (
     AudioRawFrame,
@@ -58,10 +61,12 @@ class DashScopeSTTService(SegmentedSTTService):
     接收累积的 PCM 音频 bytes，转写后 yield TranscriptionFrame。
     """
 
-    def __init__(self, *, api_key: str, model: str = "paraformer-realtime-v2", **kwargs):
+    def __init__(self, *, api_key: str, model: str = "paraformer-realtime-v2",
+                 record: Optional[LatencyRecord] = None, **kwargs):
         super().__init__(settings=STTSettings(model=None, language=None), **kwargs)
         self._api_key = api_key
         self._model = model
+        self._record = record
 
     async def run_stt(self, audio: bytes) -> AsyncGenerator[Frame, None]:
         # SegmentedSTTService 传入的已经是 WAV bytes（含 header）
@@ -69,6 +74,8 @@ class DashScopeSTTService(SegmentedSTTService):
             logger.warning("[DashScopeSTT] 收到空音频，跳过")
             return
 
+        if self._record:
+            self._record.asr_start = time.monotonic()
         logger.info(f"[DashScopeSTT] ▶ 开始识别：{len(audio)} bytes WAV")
         dashscope.api_key = self._api_key
 
@@ -118,6 +125,10 @@ class DashScopeSTTService(SegmentedSTTService):
             os.unlink(tmp_path)
 
         if text:
+            if self._record:
+                t = time.monotonic()
+                self._record.asr_end = t
+                self._record.asr_first = t  # 批量模式：首包 = 总结束
             logger.info(f"[DashScopeSTT] ✓ 识别结果: '{text}'")
             yield TranscriptionFrame(text=text, user_id="user", timestamp="")
         else:

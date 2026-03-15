@@ -10,7 +10,7 @@
 import pytest
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
-from pipeline import VoicePipeline, PipelineEvent
+from pipeline.voice import VoicePipeline, PipelineEvent
 
 
 class TestVoicePipelineEvents:

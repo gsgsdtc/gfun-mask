@@ -7,7 +7,7 @@
 """
 
 import pytest
-from session import Session, SessionState
+from core.session import Session, SessionState
 
 
 class TestSessionInitialState:
