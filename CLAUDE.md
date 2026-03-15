@@ -1,126 +1,155 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+本文件为 Claude Code 提供项目开发指引。
 
-## Project Overview
+## 项目概览
 
-**VoiceMask** is a wearable AI voice assistant system consisting of:
-- **ESP32 Firmware**: Captures audio via microphone, encodes with Opus, streams through BLE L2CAP to iOS
-- **iOS App**: Receives BLE L2CAP data, connects to Pipecat cloud for STT/LLM/TTS pipeline
-- **Pipecat Backend** (future): Cloud-based voice processing pipeline
+**VoiceMask** 是一款可穿戴 AI 语音助理系统，由以下部分组成：
+- **ESP32 固件**：通过麦克风采集音频，Opus 编码后经 BLE L2CAP 流式传输至 iOS
+- **iOS App**：接收 BLE L2CAP 数据，连接 Pipecat 云端完成 STT/LLM/TTS 管道处理
+- **Pipecat 后端**：云端语音处理管道
 
-**Current Phase**: Phase 1 — BLE L2CAP channel verification (Hello World)
+**当前阶段**：Phase 1 — BLE L2CAP 通道验证（Hello World）
 
-## Build Commands
+## 构建命令
 
-### ESP32 Firmware (ESP-IDF)
+### ESP32 固件（ESP-IDF）
+
+**环境初始化**（每次新终端会话需执行）：
+```bash
+export IDF_PYTHON_ENV_PATH=/Users/guoshiguang/.espressif/python_env/idf5.5_py3.13_env
+source ~/esp/v5.5.2/esp-idf/export.sh
+```
+
+**编译**：
+```bash
+cd firmware
+idf.py build
+```
+
+**串口监视**：
+```bash
+idf.py -p $(ls /dev/cu.usb* | head -1) monitor
+```
+
+**烧录固件**：
+
+`idf.py flash` 对 ESP32-S3 Box Lite 无效，需直接调用 esptool 并指定 `--before default_reset --connect-attempts 20`：
 
 ```bash
 cd firmware
+PORT=/dev/cu.usbmodem21101  # 根据实际端口调整
 
-# Build
-idf.py build
-
-# Flash to device (detect port automatically)
-idf.py -p $(ls /dev/cu.usb* | head -1) flash
-
-# Monitor serial output
-idf.py -p $(ls /dev/cu.usb* | head -1) monitor
-
-# Build and flash in one command
-idf.py -p $(ls /dev/cu.usb* | head -1) build flash monitor
+/Users/guoshiguang/.espressif/python_env/idf5.5_py3.13_env/bin/python \
+  ~/esp/v5.5.2/esp-idf/components/esptool_py/esptool/esptool.py \
+  --chip esp32s3 -p $PORT -b 460800 \
+  --before default_reset --connect-attempts 20 \
+  write_flash --flash_mode dio --flash_freq 80m --flash_size 2MB \
+  0x0     build/bootloader/bootloader.bin \
+  0x10000 build/voicemask_firmware.bin \
+  0x8000  build/partition_table/partition-table.bin
 ```
+
+> 如连接仍失败，备用方案：按住 **BOOT** → 短按 **RST** → 松开 **BOOT** 进入下载模式，将命令中的 `--before default_reset` 改为 `--before no_reset` 后执行。
 
 ### iOS App
 
 ```bash
 cd VoiceMaskApp
-# Open in Xcode
 open VoiceMaskApp.xcodeproj
 ```
 
-Build with Xcode: `Cmd+B`, Run: `Cmd+R`
+Xcode 编译：`Cmd+B`，运行：`Cmd+R`
 
-## Architecture
+### Pipecat 后端服务
 
-### BLE L2CAP Communication
+```bash
+cd pipecat-server
+.venv/bin/python main.py
+# 或通过 Makefile
+make server
+```
+
+服务启动后监听 `http://0.0.0.0:8765`（WebSocket）。
+
+## 架构说明
+
+### BLE L2CAP 通信流程
 
 ```
 ESP32 (NimBLE)                    iOS (CoreBluetooth)
      │                                  │
-     │── BLE Advertising ─────────────►│ Scan (PSM Service UUID filter)
-     │   Device Name: "VoiceMask-01"   │
+     │── BLE 广播 ───────────────────►│ 扫描（PSM Service UUID 过滤）
+     │   设备名: "VoiceMask-01"        │
      │                                  │
-     │◄────── BLE Connect ─────────────│
+     │◄────── BLE 连接 ────────────────│
      │                                  │
-     │◄── GATT Read PSM Characteristic ─│
-     │── Returns PSM=128 (0x80) ───────►│
+     │◄── GATT 读取 PSM 特征值 ─────────│
+     │── 返回 PSM=128 (0x80) ─────────►│
      │                                  │
-     │◄── L2CAP Channel Open (PSM=128) ─│
+     │◄── L2CAP 通道建立 (PSM=128) ────│
      │                                  │
-     │── L2CAP Data ("hello world") ───►│ Stream every 3 seconds
+     │── L2CAP 数据 ("hello world") ──►│ 每 3 秒发送
 ```
 
-**Key Design Decisions**:
-- **NimBLE over Bluedroid**: ESP-IDF's Bluedroid stack does NOT support BLE L2CAP CoC. Must use NimBLE.
-- **PSM via GATT**: PSM value (128) is exposed through a GATT characteristic, allowing iOS to discover it dynamically.
-- **Protocol Frame Types** (future): `0x00` heartbeat, `0xFF` VAD pre-warm, `0xFE` end-of-utterance, `0x01` audio frame
+**关键设计决策**：
+- **NimBLE 而非 Bluedroid**：ESP-IDF 的 Bluedroid 栈不支持 BLE L2CAP CoC，必须使用 NimBLE
+- **PSM 通过 GATT 暴露**：PSM 值（128）通过 GATT 特征值动态下发，iOS 侧可自动发现
+- **协议帧类型**（规划中）：`0x00` 心跳，`0xFF` VAD 预热，`0xFE` 语音结束，`0x01` 音频帧
 
-### ESP32 Firmware Structure
+### ESP32 固件结构
 
 ```
 firmware/main/
-├── main.c           # Entry point, NimBLE initialization
-├── ble_gap.c/.h     # GAP advertising & connection management
-├── ble_gatts.c/.h   # GATT server, PSM characteristic
-├── ble_l2cap.c/.h   # L2CAP CoC channel, data transmission
-└── hello_timer.c/.h # 3-second timer for "hello world"
+├── main.c           # 入口，NimBLE 初始化
+├── ble_gap.c/.h     # GAP 广播与连接管理
+├── ble_gatts.c/.h   # GATT 服务，PSM 特征值
+├── ble_l2cap.c/.h   # L2CAP CoC 通道，数据传输
+└── hello_timer.c/.h # 3 秒定时器（hello world）
 ```
 
-### iOS App Structure
+### iOS App 结构
 
 ```
 VoiceMaskApp/VoiceMaskApp/
-├── VoiceMaskAppApp.swift   # SwiftUI App entry
-├── ContentView.swift       # Debug UI (status bar + message list)
-├── Info.plist              # Bundle config, Bluetooth permission
+├── VoiceMaskAppApp.swift   # SwiftUI App 入口
+├── ContentView.swift       # 调试 UI（状态栏 + 消息列表）
+├── Info.plist              # Bundle 配置，蓝牙权限
 └── BLE/
-    ├── BLEManager.swift    # CoreBluetooth manager, scan/connect/L2CAP
-    └── L2CAPHandler.swift  # L2CAP stream reading
+    ├── BLEManager.swift    # CoreBluetooth 管理，扫描/连接/L2CAP
+    └── L2CAPHandler.swift  # L2CAP 流读取
 ```
 
-## BLE Constants
+## BLE 常量
 
-| Constant | Value | Usage |
-|----------|-------|-------|
-| Device Name | `VoiceMask-01` | ESP32 advertising name |
-| PSM Service UUID | `0000AE00-0000-1000-8000-00805F9B34FB` | GATT service for PSM discovery |
-| PSM Characteristic UUID | `0000AE01-0000-1000-8000-00805F9B34FB` | Contains PSM value |
-| PSM Value | 128 (`0x80`) | L2CAP channel identifier |
-| L2CAP MTU | 512 bytes | Channel payload size |
+| 常量 | 值 | 用途 |
+|------|----|------|
+| 设备名 | `VoiceMask-01` | ESP32 广播名称 |
+| PSM 服务 UUID | `0000AE00-0000-1000-8000-00805F9B34FB` | GATT 服务，用于 PSM 发现 |
+| PSM 特征值 UUID | `0000AE01-0000-1000-8000-00805F9B34FB` | 存储 PSM 值 |
+| PSM 值 | 128（`0x80`）| L2CAP 通道标识符 |
+| L2CAP MTU | 512 字节 | 通道数据包大小 |
 
-## ESP-IDF Configuration
+## ESP-IDF 配置
 
-Key settings in `firmware/sdkconfig.defaults`:
+`firmware/sdkconfig.defaults` 关键配置：
 ```
-CONFIG_BT_NIMBLE_ENABLED=y              # Use NimBLE (required for L2CAP CoC)
-CONFIG_BT_NIMBLE_L2CAP_COC_MAX_NUM=1    # Max 1 L2CAP channel
-CONFIG_BT_NIMBLE_MSYS_1_BLOCK_SIZE=512  # 512-byte mbuf blocks
+CONFIG_BT_NIMBLE_ENABLED=y              # 使用 NimBLE（L2CAP CoC 必需）
+CONFIG_BT_NIMBLE_L2CAP_COC_MAX_NUM=1    # 最多 1 个 L2CAP 通道
+CONFIG_BT_NIMBLE_MSYS_1_BLOCK_SIZE=512  # 512 字节 mbuf 块
 ```
 
-## Future Phases
+## 未来阶段规划
 
-- **Phase 2**: Audio pipeline (VAD, Opus encoding, dynamic BLE connection parameters)
-- **Phase 3**: Pipecat integration (WebRTC, STT/LLM/TTS)
-- **Phase 4**: Background survival, phone call handling, ducking
+- **Phase 2**：音频管道（VAD、Opus 编码、动态 BLE 连接参数）
+- **Phase 3**：Pipecat 集成（WebRTC、STT/LLM/TTS）
+- **Phase 4**：后台保活、通话处理、音频闪避
 
-## Engineering Rules
+## 工程规范
 
-### 监控规则（Observability Rule）
+### 监控规则
 
 **所有接入 pipecat-server 的外部服务（STT / LLM / TTS 及未来新增服务）必须有对应的监控埋点。**
-
-具体要求：
 
 | 指标 | 要求 |
 |------|------|
@@ -140,10 +169,10 @@ CONFIG_BT_NIMBLE_MSYS_1_BLOCK_SIZE=512  # 512-byte mbuf blocks
 
 ---
 
-## Related Documentation
+## 相关文档
 
-- Epic: `docs/epic/epic-01.md` — Full product vision and milestones
-- Architecture: `docs/epic/iOS 实时语音外设互联架构设计方案.md`
-- Feat: `docs/feat/feat-01-esp32-ios-ble-l2cap-hello-world.md`
-- ESP32 Design: `docs/modules/ble-channel/design/01-ble-l2cap-hello-world-esp32-design.md`
-- iOS Design: `docs/modules/ble-channel/design/01-ble-l2cap-hello-world-ios-design.md`
+- Epic：`docs/epic/epic-01.md` — 完整产品愿景与里程碑
+- 架构：`docs/epic/iOS 实时语音外设互联架构设计方案.md`
+- 需求：`docs/feat/feat-01-esp32-ios-ble-l2cap-hello-world.md`
+- ESP32 设计：`docs/modules/ble-channel/design/01-ble-l2cap-hello-world-esp32-design.md`
+- iOS 设计：`docs/modules/ble-channel/design/01-ble-l2cap-hello-world-ios-design.md`
