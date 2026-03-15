@@ -1,0 +1,5 @@
+dependencies:
+  espressif/gmf_core:
+    version: ">=0.7.10"
+  espressif/gmf_io:
+    version: ">=0.7.6"
