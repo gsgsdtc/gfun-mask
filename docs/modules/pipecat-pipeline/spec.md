@@ -1,8 +1,8 @@
 # Module Spec: pipecat-pipeline
 
 > 模块：Pipecat WebSocket 语音处理管道
-> 最近同步：2026-03-13
-> 状态：Phase 4 完成（延迟计量 + SQLite 持久化 + Admin REST API）
+> 最近同步：2026-03-15
+> 状态：Phase 5 完成（多句子 TTS 流水线修复 + LLM 模型升级）
 
 ---
 
@@ -26,7 +26,7 @@
 | Web 框架 | FastAPI + Uvicorn | 承载 WebSocket endpoint 和 Admin REST API |
 | 管道框架 | pipecat-ai >= 0.0.100 | 语音处理流水线编排 |
 | STT | DashScope Paraformer (`paraformer-realtime-v2`) | 阿里云 ASR，批量识别 WAV 文件 |
-| LLM | DashScope Qwen（OpenAI 兼容接口，`qwen-turbo`） | 通义千问，生成回复 |
+| LLM | DashScope Qwen（OpenAI 兼容接口，`qwen-turbo-latest`） | 通义千问，生成回复 |
 | TTS | DashScope CosyVoice (`cosyvoice-v1`) | 阿里云 TTS，合成 MP3 |
 | 数据库 | SQLite + aiosqlite | 本地异步持久化，存储对话延迟记录 |
 
@@ -163,9 +163,11 @@ DashScopeTTSService
     │  TextFrame → 合成 → TTSStartedFrame + TTSAudioRawFrame×N + TTSStoppedFrame
     ▼
 TTSAudioForwarder
-    │  TTSAudioRawFrame → record.tts_ttfa（首帧），发二进制音频
-    │  TTSStartedFrame → 发 tts_start
-    │  TTSStoppedFrame → record.tts_end，发 tts_end，触发 on_complete
+    │  TTSAudioRawFrame → record.tts_ttfa（首帧，只记录一次），发二进制音频
+    │  TTSStartedFrame → tts_active++，仅第一句发 tts_start
+    │  TTSStoppedFrame → record.tts_end，tts_active--，触发 _maybe_complete
+    │  LLMFullResponseEndFrame → llm_done=True，触发 _maybe_complete
+    │  _maybe_complete：llm_done && tts_active==0 时发 tts_end + 触发 on_complete
     ▼
 WebSocket Output
     │  序列化（iOSProtocolSerializer.serialize）
@@ -311,11 +313,13 @@ LLMContextAggregator (assistant)
 ### 6.3 延迟记录完成回调（_on_complete）
 
 ```
-on TTSStoppedFrame（TTSAudioForwarder 触发 on_complete）:
+on _maybe_complete（TTSAudioForwarder，当 llm_done==True 且 tts_active==0）:
     rec.emit_log()           # 输出延迟摘要 + 慢请求 WARNING
     写入 conversations 表    # 含全部时间指标 + user_text + ai_text
     重置 record 字段         # 为下一次请求复用同一 LatencyRecord 实例
 ```
+
+**多句子流水线说明**：Pipecat 内置句子聚合后，LLM 一轮输出可产生多个 `TTSStartedFrame/TTSStoppedFrame` 对。`TTSAudioForwarder` 通过计数器 `_tts_active` 跟踪活跃句子数，等 LLM 完成（`LLMFullResponseEndFrame`）且所有句子结束（`tts_active == 0`）后才触发一次 `tts_end` 和 `on_complete`，避免多余的重复事件。
 
 ---
 
@@ -327,7 +331,7 @@ on TTSStoppedFrame（TTSAudioForwarder 触发 on_complete）:
 | `SERVER_HOST` | `0.0.0.0` | 监听地址 |
 | `SERVER_PORT` | `8765` | 监听端口 |
 | `STT_MODEL` | `paraformer-realtime-v2` | 语音识别模型 |
-| `LLM_MODEL` | `qwen-turbo` | 大语言模型 |
+| `LLM_MODEL` | `qwen-turbo-latest` | 大语言模型 |
 | `TTS_MODEL` | `cosyvoice-v1` | 语音合成模型 |
 | `TTS_VOICE` | `longxiaochun` | TTS 音色 |
 | `MAX_HISTORY_TURNS` | `10` | LLM 对话历史最大轮数 |
@@ -368,3 +372,5 @@ on TTSStoppedFrame（TTSAudioForwarder 触发 on_complete）:
 | 2026-03-13 | feat #04 | 新增 SQLite 持久化（db.py，conversations 表，含 e2e_total_ms） |
 | 2026-03-13 | feat #04 | 新增 Admin REST API（/api/admin/stats + conversations CRUD） |
 | 2026-03-13 | fix | 修复 ai_text 为空：LLMTextCapture 移到 TTS 之前拦截 TextFrame |
+| 2026-03-15 | feat #06 | TTSAudioForwarder 重构：支持多句子 TTS 流水线，tts_start/tts_end/on_complete 各触发一次 |
+| 2026-03-15 | feat #06 | LLM 模型升级：qwen-turbo → qwen-turbo-latest |

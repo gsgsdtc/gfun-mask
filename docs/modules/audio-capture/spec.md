@@ -1,8 +1,8 @@
 # Module Spec: audio-capture
 
 > 模块：ESP32 音频采集与编码
-> 最近同步：2026-03-10
-> 状态：Phase 2 完成（PCM 直传，Opus 待集成）
+> 最近同步：2026-03-15
+> 状态：Phase 6 完成（GMF-Core 音频流水线迁移）
 
 ---
 
@@ -28,6 +28,7 @@
 | 音频接口 | I2S Legacy API (`driver/i2s.h`) | ESP-IDF 5.x 中已 deprecated，但功能正常 |
 | 当前编码 | PCM 直传（passthrough） | 验证麦克风链路；确认有声音后切 Opus |
 | 目标编码 | Opus (`espressif/esp-opus`) | 低延迟语音编码 |
+| 流水线框架 | **ESP-GMF-Core** | 替代手写双 FreeRTOS 任务架构，对外接口不变 |
 | 开发框架 | ESP-IDF 5.5.x | 官方 SDK |
 
 ---
@@ -72,7 +73,9 @@ firmware/main/
 │   ├── audio_driver.c/.h        # I2S 麦克风驱动抽象层
 │   ├── audio_driver_es7210.c    # ES7243E 具体实现（文件名历史遗留）
 │   ├── opus_encoder.c/.h        # 编码器封装（当前 PCM 直传模式）
-│   └── audio_pipeline.c/.h      # 采集 → 编码 → 发送流水线
+│   ├── audio_pipeline.c/.h      # 采集 → 编码 → 发送流水线（GMF-Core 版）
+│   ├── gmf_mic_io.c/.h          # GMF Element：I2S 麦克风输入源
+│   └── gmf_pcm_enc_el.c/.h      # GMF Element：PCM 编码 + BLE 发送
 └── boards/
     └── esp32_s3_box_lite.h      # ESP32-S3-BOX-Lite 硬件引脚配置
 ```
@@ -128,10 +131,12 @@ audio_state_t audio_pipeline_get_state(void);
 uint32_t     audio_pipeline_get_frame_count(void);
 ```
 
-**流水线内部实现要点：**
-- I2S Task 读取双声道 PCM，取高能量声道，放入 PCM 队列
-- Encoder Task 从队列取帧 → 编码 → 等待 `ble_l2cap_is_tx_ready()` → `ble_l2cap_send_frame()`
-- 发送失败不停止流水线，AUDIO_STATE_ERROR 可自动恢复为 IDLE
+**流水线内部实现要点（GMF-Core 版）：**
+- 内部使用 GMF Pipeline 替代原手写双 FreeRTOS 任务（I2S Task + Encoder Task）
+- `GmfMicIO`：GMF Source Element，读取 I2S 双声道 PCM，取高能量声道输出
+- `GmfPcmEncEl`：GMF Sink Element，PCM 编码 → 等待 `ble_l2cap_is_tx_ready()` → `ble_l2cap_send_frame()`
+- Pipeline 运行在独立 GMF Task（Core 1，Priority 5，Stack 8192），避免与 BLE 任务竞争
+- 对外接口（`audio_pipeline_init/start/stop`）保持不变，调用方无感知
 
 ---
 
@@ -212,6 +217,16 @@ uint32_t     audio_pipeline_get_frame_count(void);
 | BLE L2CAP 流控（stall） | ✅ | 不阻塞流水线 |
 | RECORD_END 确认帧 | ✅ | 含 uint32 总帧数 |
 
+### Phase 6 — GMF-Core 迁移
+
+| 验收项 | 状态 | 备注 |
+|--------|------|------|
+| GmfMicIO Element 实现 | ✅ | I2S 读取 + 高能量声道选择 |
+| GmfPcmEncEl Element 实现 | ✅ | PCM 编码 + BLE L2CAP 发送 |
+| GMF Pipeline 替代双 FreeRTOS 任务 | ✅ | Core 1 独立 Task |
+| 对外接口向后兼容 | ✅ | audio_pipeline_init/start/stop 不变 |
+| idf_component.yml 添加 gmf-core 依赖 | ✅ | |
+
 ### Phase 3 — Opus 编码（待完成）
 
 | 验收项 | 状态 | 备注 |
@@ -233,3 +248,5 @@ uint32_t     audio_pipeline_get_frame_count(void);
 | 2026-03-09 | fix | DMA buf_len 恢复 320（原代码多乘了 2，导致 640 samples 的 40ms 帧） |
 | 2026-03-09 | feat | PCM 直传模式：640B/帧，含能量日志（每 100 帧打印） |
 | 2026-03-10 | fix | CoC MTU 提升至 1024，确保 643B PCM 帧不超限 |
+| 2026-03-15 | feat #06 | GMF-Core 迁移：双 FreeRTOS 任务 → GMF Pipeline，新增 GmfMicIO / GmfPcmEncEl Element |
+| 2026-03-15 | feat #06 | 对外接口保持不变，Pipeline 运行在 Core 1（Priority 5） |
