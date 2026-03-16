@@ -83,14 +83,36 @@ struct ContentView: View {
             }
         }
 
-        // 设置录音结束回调
+        // 录音开始通知（唤醒词触发时 ESP32 主动推送，iOS 同步状态）
+        // 手动按钮路径：iOS 已调用 startReceiving()，此处忽略（防止重置计数器）
+        // 唤醒词路径：iOS 未接收中，此处触发 startReceiving()
+        handler.onRecordingStarted = { [weak audioReceiver] in
+            print("[AUDIO] onRecordingStarted received")
+            switch activeMode {
+            case .recording:
+                if audioReceiver?.isReceiving == false {
+                    print("[AUDIO] wake word path → startReceiving()")
+                    audioReceiver?.startReceiving()
+                } else {
+                    print("[AUDIO] manual path → already receiving, skip")
+                }
+            case .voiceChat:
+                Task { await self.voiceChatViewModel.startRecordingFromESP32() }
+            }
+        }
+
+        // 录音结束回调
         handler.onRecordEnd = { [weak audioReceiver] totalFrames in
             print("[AUDIO] onRecordEnd: totalFrames=\(totalFrames)")
-            audioReceiver?.handleRecordEnd(expectedFrames: totalFrames)
-
-            // 保存录音
-            if let opusData = audioReceiver?.stopReceiving() {
-                saveRecording(opusData: opusData, duration: audioReceiver?.recordingDuration ?? 0)
+            switch activeMode {
+            case .recording:
+                audioReceiver?.handleRecordEnd(expectedFrames: totalFrames)
+                if let opusData = audioReceiver?.stopReceiving() {
+                    saveRecording(opusData: opusData, duration: audioReceiver?.recordingDuration ?? 0)
+                }
+            case .voiceChat:
+                // 触发 Pipecat STT 流程（等同于用户点击"停止"按钮）
+                Task { await self.voiceChatViewModel.stopRecording() }
             }
         }
 

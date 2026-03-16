@@ -19,6 +19,7 @@ typedef enum {
     FRAME_TYPE_CMD_START_RECORD  = 0x10,  /* 开始录音指令（iOS → ESP32） */
     FRAME_TYPE_CMD_STOP_RECORD   = 0x11,  /* 停止录音指令（iOS → ESP32） */
     FRAME_TYPE_RECORD_END        = 0x12,  /* 录音结束确认（ESP32 → iOS） */
+    FRAME_TYPE_RECORDING_STARTED = 0x13,  /* 录音已开始通知（ESP32 → iOS，pipeline_start 时始终发送） */
 } frame_type_t;
 
 /* ── 初始化与连接管理 ─────────────────────────────────────── */

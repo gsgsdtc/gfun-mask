@@ -151,6 +151,27 @@ final class VoiceChatViewModel: ObservableObject {
         wsClient.startRecording()
     }
 
+    /// ESP32 唤醒词触发录音时调用（不向 ESP32 发 CMD，仅同步 iOS 侧状态）
+    func startRecordingFromESP32() {
+        guard chatState.canStart else {
+            print("[ViewModel] startRecordingFromESP32: 已在录音或处理中，忽略")
+            return
+        }
+        guard isWebSocketConnected else {
+            print("[ViewModel] startRecordingFromESP32: WebSocket 未连接，忽略")
+            return
+        }
+        print("[ViewModel] ▶ startRecordingFromESP32 (wake word) → state=.recording")
+        chatState = .recording
+        recordingDuration = 0
+        recordingTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                self?.recordingDuration += 0.1
+            }
+        }
+        wsClient.startRecording()
+    }
+
     func stopRecording() {
         guard chatState.isRecording else { return }
         recordingTimer?.invalidate()

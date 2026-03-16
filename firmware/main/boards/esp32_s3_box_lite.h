@@ -32,3 +32,7 @@
 /* I2S DMA 缓冲配置 */
 #define AUDIO_DMA_BUF_COUNT     8
 #define AUDIO_DMA_BUF_LEN       320    /* 20ms @ 16kHz = 320 samples */
+
+/* ── 按键配置 ─────────────────────────────────────────────── */
+
+#define BUTTON_STOP_GPIO        GPIO_NUM_0   /* BOOT/MUTE 键，低电平有效 */

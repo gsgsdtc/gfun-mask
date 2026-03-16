@@ -3,3 +3,7 @@ dependencies:
     version: ">=0.7.10"
   espressif/gmf_io:
     version: ">=0.7.6"
+  espressif/gmf_ai_audio:
+    version: ">=0.7.0"
+  espressif/esp-sr:
+    version: ">=2.0.0"

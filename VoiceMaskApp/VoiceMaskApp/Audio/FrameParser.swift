@@ -21,9 +21,10 @@ enum FrameType: UInt8 {
     case audio            = 0x01
     case vadPrewarm       = 0xFF
     case endOfUtterance   = 0xFE
-    case cmdStartRecord   = 0x10
-    case cmdStopRecord    = 0x11
-    case recordEnd        = 0x12
+    case cmdStartRecord      = 0x10
+    case cmdStopRecord       = 0x11
+    case recordEnd           = 0x12
+    case recordingStarted    = 0x13
 }
 
 // MARK: - 音频帧

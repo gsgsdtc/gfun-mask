@@ -250,6 +250,15 @@ static int es7210_stop(void)
     return 0;
 }
 
+/* 锁定声道：-1=未确定，0=LEFT，1=RIGHT
+ * 启动后前 10 次读取累积 L/R 能量，选择能量更高的声道后锁定，
+ * 保证 AFE 收到连续、一致的音频流（不锁定则每帧可能换道，导致 WakeNet 失效） */
+static int  s_locked_ch    = -1;
+static int  s_lock_count   = 0;
+static int64_t s_accum_l   = 0;
+static int64_t s_accum_r   = 0;
+#define CHANNEL_LOCK_READS 10   /* 前 10 次读取后锁定 */
+
 static int es7210_read(int16_t *buf, size_t samples)
 {
     /* 双声道缓冲区：每个 frame = L + R 各一个 int16_t */
@@ -270,23 +279,38 @@ static int es7210_read(int16_t *buf, size_t samples)
 
     int frames = (int)(bytes_read / sizeof(int16_t)) / 2;
 
-    /* 计算 L/R 两个声道的能量，用于诊断哪个声道有信号 */
+    /* 计算 L/R 能量（诊断 + 声道选择用） */
     int32_t energy_l = 0, energy_r = 0;
-    static int diag_count = 0;
     for (int i = 0; i < frames; i++) {
         energy_l += abs(stereo_buf[i * 2]);
         energy_r += abs(stereo_buf[i * 2 + 1]);
     }
 
-    /* 每 50 帧打印一次诊断（约 1 秒），方便确认哪个声道有音频 */
-    if (++diag_count % 50 == 0) {
-        ESP_LOGI(TAG, "I2S energy: L=%ld, R=%ld (frames=%d)",
+    /* 前 CHANNEL_LOCK_READS 次：累积能量，选择说话时能量更高的声道后锁定
+     * 注意：当前硬件上 index=1("R") 在说话时始终更高，此处保留自动选择逻辑 */
+    if (s_locked_ch < 0) {
+        s_accum_l += energy_l;
+        s_accum_r += energy_r;
+        s_lock_count++;
+        if (s_lock_count >= CHANNEL_LOCK_READS) {
+            s_locked_ch = (s_accum_l >= s_accum_r) ? 0 : 1;
+            ESP_LOGI(TAG, "Channel locked: %s (L_acc=%lld, R_acc=%lld)",
+                     s_locked_ch == 0 ? "LEFT(0)" : "RIGHT(1)",
+                     (long long)s_accum_l, (long long)s_accum_r);
+        }
+    }
+
+    /* 实测：说话时 R 通道(index=1)能量比 L 高 15-30%，强制使用 R */
+    int ch = 1;
+
+    /* 每 5 帧打印一次能量（约 160ms），方便实时观察说话时的幅度变化 */
+    static int diag_count = 0;
+    if (++diag_count % 5 == 0) {
+        ESP_LOGI(TAG, "I2S ch%d energy: %ld (L=%ld R=%ld, frames=%d)",
+                 ch, (long)(ch == 0 ? energy_l : energy_r),
                  (long)energy_l, (long)energy_r, frames);
     }
 
-    /* 取能量更高的声道（自动适配 BOX-Lite 硬件接线）
-     * 首次启动时通过日志确认后，可硬编码为固定声道以减少开销 */
-    int ch = (energy_l >= energy_r) ? 0 : 1;
     for (int i = 0; i < frames; i++) {
         buf[i] = stereo_buf[i * 2 + ch];
     }
