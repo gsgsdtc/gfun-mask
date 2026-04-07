@@ -1,8 +1,8 @@
 # Module Spec: audio-capture
 
 > 模块：ESP32 音频采集与编码
-> 最近同步：2026-03-15
-> 状态：Phase 6 完成（GMF-Core 音频流水线迁移）
+> 最近同步：2026-04-08
+> 状态：Phase 7 完成（唤醒词检测 + AFE Manager）
 
 ---
 
@@ -63,6 +63,18 @@
 | START_RECORD | `0x10` | 启动 I2S 采集 + 启动编码/发送任务 |
 | STOP_RECORD | `0x11` | 停止采集，发送 `RECORD_END`（含总帧数） |
 
+### 2.4 唤醒词检测
+
+| 参数 | 值 | 说明 |
+|------|-----|------|
+| 唤醒词模型 | WakeNet9 | Espressif 官方唤醒词引擎 |
+| 当前模型 | hilexin | "嗨，乐鑫" 中文唤醒词 |
+| 备用模型 | Jarvis | 英文唤醒词 |
+| 推理引擎 | AFE Manager | `esp_gmf_afe_manager` 低层 API |
+| 触发模式 | suspend/resume | 检测到唤醒词后挂起 AFE，录音完成后恢复 |
+| 麦克风通道 | 单声道（M）| AFE_TYPE_SR 模式，无 AEC |
+| 任务栈大小 | feed 8KB / fetch 16KB | WakeNet9 推理需要较大栈空间 |
+
 ---
 
 ## 3. 模块结构
@@ -75,7 +87,10 @@ firmware/main/
 │   ├── opus_encoder.c/.h        # 编码器封装（当前 PCM 直传模式）
 │   ├── audio_pipeline.c/.h      # 采集 → 编码 → 发送流水线（GMF-Core 版）
 │   ├── gmf_mic_io.c/.h          # GMF Element：I2S 麦克风输入源
-│   └── gmf_pcm_enc_el.c/.h      # GMF Element：PCM 编码 + BLE 发送
+│   ├── gmf_pcm_enc_el.c/.h      # GMF Element：PCM 编码 + BLE 发送
+│   └── gmf_mute.c               # 静音检测辅助
+├── wake_detector.c/.h           # 唤醒词检测（WakeNet9 + AFE Manager）
+├── button_handler.c/.h          # 物理按键处理（录音停止触发）
 └── boards/
     └── esp32_s3_box_lite.h      # ESP32-S3-BOX-Lite 硬件引脚配置
 ```
@@ -136,11 +151,47 @@ uint32_t     audio_pipeline_get_frame_count(void);
 - `GmfMicIO`：GMF Source Element，读取 I2S 双声道 PCM，取高能量声道输出
 - `GmfPcmEncEl`：GMF Sink Element，PCM 编码 → 等待 `ble_l2cap_is_tx_ready()` → `ble_l2cap_send_frame()`
 - Pipeline 运行在独立 GMF Task（Core 1，Priority 5，Stack 8192），避免与 BLE 任务竞争
+- **唤醒词检测集成**：`wake_detector_init()` 初始化 AFE Manager，检测到唤醒词自动调用 `audio_pipeline_start()`，完成后自动恢复监听
 - 对外接口（`audio_pipeline_init/start/stop`）保持不变，调用方无感知
+
+### 4.4 wake_detector.h（唤醒词检测）
+
+```c
+typedef enum {
+    WAKE_STATE_IDLE,
+    WAKE_STATE_LISTENING,
+    WAKE_STATE_SUSPENDED,    // 检测到唤醒词，挂起 AFE，开始录音
+} wake_state_t;
+
+esp_err_t wake_detector_init(void);       // 初始化 AFE Manager + WakeNet9
+void      wake_detector_suspend(void);    // 挂起 AFE（让出 I2S）
+void      wake_detector_resume(void);     // 恢复 AFE（录音完成）
+void      wake_detector_deinit(void);
+```
+
+**实现要点：**
+- 使用 `esp_gmf_afe_manager` 低层 API（非 `esp_gmf_afe` Element）
+- 配置 `DEFAULT_GMF_AFE_MANAGER_CFG`，设置 `read_cb` 和 `result_cb`
+- **关键修复**：库 `create()` 函数不读取 `cfg->result_cb`，必须手动调用 `esp_gmf_afe_manager_set_result_cb()` 注册回调
+- 检测到唤醒词（`WAKENET_DETECTED`）时自动调用 `audio_pipeline_start()`
+- 录音停止后自动恢复 AFE，继续监听唤醒词
+- AFE feed/fetch 任务栈大小：16KB（WakeNet9 推理需求）
+
+### 4.5 button_handler.h（按键处理）
+
+```c
+void button_handler_init(void);  // 初始化 BOOT 按钮（GPIO0）中断
+```
+
+**行为：**
+- 按下 BOOT 键触发 `audio_pipeline_stop()`，停止录音
+- 与唤醒词检测配合：唤醒启动录音 → 按键停止录音
 
 ---
 
 ## 5. 状态机
+
+### 5.1 音频采集状态机
 
 ```
 ┌──────────┐  START_RECORD  ┌───────────┐  STOP_RECORD  ┌────────────┐
@@ -156,6 +207,40 @@ uint32_t     audio_pipeline_get_frame_count(void);
                                   ▼
                               IDLE（可重新 start）
 ```
+
+### 5.2 唤醒词检测状态机
+
+```
+                         ┌─────────────────────────────────┐
+                         │                                 │
+                         ▼                                 │
+┌───────────┐    Wake    ┌───────────┐   录音完成/按键停止  ┌───────────┐
+│  INITIAL  │ ─────────► │ LISTENING │ ───────────────────► │ SUSPENDED │
+└───────────┘            └───────────┘                      └───────────┘
+      │                        │                                  │
+      │                        │ 唤醒词检测                       │ resume()
+      │                        ▼                                  │
+      │                 ┌───────────┐                            │
+      │                 │ DETECTED  │ ──► audio_pipeline_start() │
+      │                 └───────────┘                            │
+      │                        │                                 │
+      └────────────────────────┴─────────────────────────────────┘
+                                   wake_detector_resume()
+```
+
+**状态说明：**
+| 状态 | 说明 |
+|------|------|
+| INITIAL | AFE Manager 初始化中 |
+| LISTENING | AFE 运行，监听唤醒词 |
+| DETECTED | 检测到唤醒词，正在启动录音 Pipeline |
+| SUSPENDED | AFE 挂起，GMF Pipeline 录音中 |
+
+**触发条件：**
+| 触发 | 行为 |
+|------|------|
+| 唤醒词检测 | `wake_detector_suspend()` + `audio_pipeline_start()` |
+| 按键按下 | `audio_pipeline_stop()` + `wake_detector_resume()` |
 
 ---
 
@@ -181,14 +266,19 @@ uint32_t     audio_pipeline_get_frame_count(void);
 #define AUDIO_SAMPLE_RATE       16000
 #define AUDIO_DMA_BUF_COUNT     8
 #define AUDIO_DMA_BUF_LEN       320           // 单位：采样点数（非字节）
+
+// I2S 时钟配置（关键：ES7243E Slave 模式需要精确时钟）
+#define AUDIO_I2S_FIXED_MCLK    2048000       // 16kHz × 128 = 2.048MHz
 ```
 
 ### 6.2 ES7243E 初始化关键约束
 
 1. **必须先启动 I2S**（MCLK 输出），再配置 I2C 寄存器（ES7243E 需要 MCLK 才响应 I2C）
-2. **Soft Reset 顺序**：严格对齐 `esp-adf` 官方序列（3 次 Soft Reset + enable 流程）
-3. **寄存器 0x06**：官方值 `0x03`（SCLK=MCLK/4），Slave 模式下 BCLK 由 I2S Master 提供
-4. **PGA 增益**：`0x1A`（+30dB），官方推荐值
+2. **I2S 时钟配置**：`fixed_mclk = 2048000`（16kHz × 128），确保与 ES7243E Slave 模式同步
+3. **重新配置时钟**：I2C 初始化后调用 `i2s_set_clk()` 强制设置采样率，确保时钟稳定
+4. **Soft Reset 顺序**：严格对齐 `esp-adf` 官方序列（3 次 Soft Reset + enable 流程）
+5. **寄存器 0x06**：官方值 `0x03`（SCLK=MCLK/4），Slave 模式下 BCLK 由 I2S Master 提供
+6. **PGA 增益**：`0x1A`（+30dB），官方推荐值
 
 ---
 
@@ -227,13 +317,17 @@ uint32_t     audio_pipeline_get_frame_count(void);
 | 对外接口向后兼容 | ✅ | audio_pipeline_init/start/stop 不变 |
 | idf_component.yml 添加 gmf-core 依赖 | ✅ | |
 
-### Phase 3 — Opus 编码（待完成）
+### Phase 7 — 唤醒词检测（完成）
 
 | 验收项 | 状态 | 备注 |
 |--------|------|------|
-| 集成 espressif/esp-opus | ⏳ | 需手动 clone + 添加组件 |
-| Opus 编码输出 | ⏳ | |
-| iOS 解码播放 | ⏳ | |
+| WakeNet9 模型加载 | ✅ | hilexin 模型优先加载 |
+| AFE Manager 初始化 | ✅ | feed_task + fetch_task |
+| BUG-001 修复应用 | ✅ | `esp_gmf_afe_manager_set_result_cb()` 手动注册回调 |
+| 唤醒词触发录音 | ✅ | 检测到"嗨，乐鑫"自动启动 GMF Pipeline |
+| 按键停止录音 | ✅ | BOOT 按钮触发 `audio_pipeline_stop()` |
+| AFE suspend/resume | ✅ | 录音时挂起 AFE，完成后恢复监听 |
+| 任务栈配置 | ✅ | feed 8KB / fetch 16KB（WakeNet9 推理需求） |
 
 ---
 
@@ -250,3 +344,7 @@ uint32_t     audio_pipeline_get_frame_count(void);
 | 2026-03-10 | fix | CoC MTU 提升至 1024，确保 643B PCM 帧不超限 |
 | 2026-03-15 | feat #06 | GMF-Core 迁移：双 FreeRTOS 任务 → GMF Pipeline，新增 GmfMicIO / GmfPcmEncEl Element |
 | 2026-03-15 | feat #06 | 对外接口保持不变，Pipeline 运行在 Core 1（Priority 5） |
+| 2026-04-08 | feat #07 | 唤醒词检测：集成 WakeNet9 + AFE Manager，支持"嗨，乐鑫"触发录音 |
+| 2026-04-08 | fix | BUG-001：应用层 workaround 修复 `result_cb` 被库忽略的问题 |
+| 2026-04-08 | fix | I2S 时钟优化：`fixed_mclk=2048000` + `i2s_set_clk()` 强制同步 |
+| 2026-04-08 | feat | 按键停止录音：BOOT 按钮中断处理 |
