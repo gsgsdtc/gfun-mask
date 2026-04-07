@@ -155,7 +155,7 @@ static int es7210_init(void)
         .dma_buf_len = AUDIO_DMA_BUF_LEN,               /* 320 采样点（原 *2 有误）*/
         .use_apll = true,
         .tx_desc_auto_clear = false,
-        .fixed_mclk = 0,
+        .fixed_mclk = 2048000,  // 16kHz * 256 = 2.048MHz，确保精确的采样率
     };
     i2s_pin_config_t pin_cfg = {
         .mck_io_num = AUDIO_I2S_MCLK_PIN,
@@ -224,6 +224,16 @@ static int es7210_init(void)
         return -1;
     }
     ESP_LOGI(TAG, "ES7243E I2C init OK");
+
+    /* 6. 重新配置 I2S 时钟，确保与 ES7243E 的 Slave 模式同步
+     * ES7243E 期望：MCLK=2.048MHz, BCLK=1.024MHz(SCLK), LRCK=16kHz
+     */
+    ret = i2s_set_clk(AUDIO_I2S_NUM, AUDIO_SAMPLE_RATE, I2S_BITS_PER_SAMPLE_16BIT, I2S_CHANNEL_STEREO);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "I2S set clock failed: %d", ret);
+        return -1;
+    }
+    ESP_LOGI(TAG, "I2S clock reconfigured: %dHz, 16-bit, stereo", AUDIO_SAMPLE_RATE);
 
     return 0;
 }
