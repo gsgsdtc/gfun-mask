@@ -104,6 +104,11 @@ async def build_pipeline(
     # 根据配置选择 LLM 提供商
     if Config.LLM_PROVIDER == "lmstudio":
         logger.info(f"[Pipeline] 使用 LM Studio 本地模型: {Config.LMSTUDIO_MODEL} @ {LMSTUDIO_BASE_URL}")
+        # 禁用 Qwen3.5 thinking 模式的额外参数
+        extra_params = {}
+        if "qwen" in Config.LLMSTUDIO_MODEL.lower():
+            extra_params = {"enable_thinking": False}
+            logger.info("[Pipeline] 已禁用 Qwen thinking 模式")
         llm = OpenAILLMService(
             api_key=Config.LMSTUDIO_API_KEY,
             base_url=LMSTUDIO_BASE_URL,
@@ -111,6 +116,7 @@ async def build_pipeline(
             temperature=0.7,
             max_tokens=100,  # 限制输出长度，加快响应
             stream=True,     # 强制启用流式模式
+            params=extra_params if extra_params else None,
         )
     else:
         logger.info(f"[Pipeline] 使用 DashScope 通义千问: {Config.LLM_MODEL}")
