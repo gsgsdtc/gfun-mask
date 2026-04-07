@@ -17,6 +17,7 @@
 #include "esp_gmf_afe_manager.h"
 #include "esp_afe_sr_iface.h"
 #include "model_path.h"
+#include "esp_wn_models.h"
 #include "audio_driver.h"
 #include "audio_pipeline.h"
 #include "wake_detector.h"
@@ -95,7 +96,7 @@ static void _afe_result_cb(afe_fetch_result_t *result, void *user_ctx)
     }
 
     if (result->wakeup_state == WAKENET_DETECTED) {
-        ESP_LOGI(TAG, "Wake word 'Jarvis' detected!");
+        ESP_LOGI(TAG, "Wake word detected! (Hi Lexin / Jarvis)");
 
         /* 防抖：已在录音状态则忽略 */
         if (audio_pipeline_get_state() != AUDIO_STATE_IDLE) {
@@ -143,6 +144,15 @@ esp_err_t wake_detector_init(void)
     }
 
     /* ── 2. 创建 AFE 配置（单麦克风，WakeNet-only）── */
+    /* 优先选 hilexin（中文，真实人声训练，验证流水线用）；
+     * 若不存在则回退到第一个可用模型 */
+    char *wn_model = esp_srmodel_filter(s_models, ESP_WN_PREFIX, "hilexin");
+    if (!wn_model) {
+        ESP_LOGW(TAG, "hilexin not found, using default model");
+    } else {
+        ESP_LOGI(TAG, "Selected wake word model: %s", wn_model);
+    }
+
     /* "M" = 单 Mic 通道，无参考信号，无 AEC */
     s_afe_cfg = afe_config_init("M", s_models, AFE_TYPE_SR, AFE_MODE_HIGH_PERF);
     if (!s_afe_cfg) {
@@ -150,6 +160,10 @@ esp_err_t wake_detector_init(void)
         esp_srmodel_deinit(s_models);
         s_models = NULL;
         return ESP_ERR_NO_MEM;
+    }
+    /* 强制使用 hilexin 模型（如果找到） */
+    if (wn_model) {
+        s_afe_cfg->wakenet_model_name = wn_model;
     }
     /* 关闭 VAD（本期按键手动结束，不需要自动 VAD 结束） */
     s_afe_cfg->vad_init = false;
@@ -191,6 +205,10 @@ esp_err_t wake_detector_init(void)
         s_models      = NULL;
         return ESP_FAIL;
     }
+
+    /* 关键修复：库的 create 函数不读取 cfg->result_cb，必须单独设置 */
+    esp_gmf_afe_manager_set_result_cb(s_afe_manager, _afe_result_cb, NULL);
+    ESP_LOGI(TAG, "Result callback registered");
 
     s_initialized = true;
     ESP_LOGI(TAG, "Wake detector initialized, listening for 'Jarvis'...");
