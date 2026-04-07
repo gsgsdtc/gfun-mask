@@ -10,6 +10,8 @@ firmware/sdkconfig.old
 firmware/dependencies.lock
 firmware/.cache/
 firmware/.vscode/
+firmware/screenlog.*
+firmware/demo/
 
 # Xcode
 *.xcuserstate
@@ -35,4 +37,10 @@ __pycache__/
 *.log
 logs
 logs/
+
+# Temporary docs
+docs/bug/
+
+# Database
+pipecat-server/*.db
 
