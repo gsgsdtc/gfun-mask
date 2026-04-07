@@ -108,6 +108,9 @@ async def build_pipeline(
             api_key=Config.LMSTUDIO_API_KEY,
             base_url=LMSTUDIO_BASE_URL,
             model=Config.LMSTUDIO_MODEL,
+            temperature=0.7,
+            max_tokens=100,  # 限制输出长度，加快响应
+            stream=True,     # 强制启用流式模式
         )
     else:
         logger.info(f"[Pipeline] 使用 DashScope 通义千问: {Config.LLM_MODEL}")
@@ -115,6 +118,9 @@ async def build_pipeline(
             api_key=Config.DASHSCOPE_API_KEY,
             base_url=DASHSCOPE_BASE_URL,
             model=Config.LLM_MODEL,
+            temperature=0.7,
+            max_tokens=100,
+            stream=True,
         )
 
     stt = DashScopeSTTService(
@@ -151,7 +157,15 @@ async def build_pipeline(
         context_aggregator.assistant(),
     ])
 
-    task = PipelineTask(pipeline, params=PipelineParams(allow_interruptions=False), enable_rtvi=False)
+    task = PipelineTask(
+        pipeline,
+        params=PipelineParams(
+            allow_interruptions=True,  # 允许打断，提升响应性
+            enable_metrics=True,
+            enable_usage_metrics=True,
+        ),
+        enable_rtvi=False,
+    )
 
     @transport.event_handler("on_client_connected")
     async def on_connected(transport, client):
