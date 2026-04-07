@@ -11,6 +11,9 @@ idf_component_register(
         "audio/audio_pipeline.c"
         "audio/gmf_mic_io.c"
         "audio/gmf_pcm_enc_el.c"
+        "wake_detector.c"
+        "button_handler.c"
     INCLUDE_DIRS "." "audio" "boards"
     REQUIRES nvs_flash bt driver espressif__gmf_core espressif__gmf_io
+             espressif__gmf_ai_audio espressif__esp-sr
 )

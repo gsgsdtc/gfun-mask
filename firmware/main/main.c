@@ -21,6 +21,8 @@
 #include "ble_l2cap.h"
 #include "audio_driver.h"
 #include "audio_pipeline.h"
+#include "wake_detector.h"
+#include "button_handler.h"
 
 #define TAG "MAIN"
 
@@ -114,6 +116,16 @@ void app_main(void)
     audio_driver_es7210_register();
     if (audio_pipeline_init() != 0) {
         ESP_LOGE(TAG, "Audio pipeline init failed");
+    }
+
+    /* ── 8a. 初始化唤醒词检测（Jarvis / WakeNet9）─────────── */
+    if (wake_detector_init() != ESP_OK) {
+        ESP_LOGW(TAG, "Wake detector init failed, fallback to BLE remote control");
+    }
+
+    /* ── 8b. 初始化按键处理（BOOT 键停止录音）────────────── */
+    if (button_handler_init() != ESP_OK) {
+        ESP_LOGW(TAG, "Button handler init failed");
     }
 
     /* ── 9. 设置设备名称 ─────────────────────────────────── */

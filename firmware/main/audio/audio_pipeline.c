@@ -219,6 +219,10 @@ int audio_pipeline_start(void)
         return -1;
     }
 
+    /* 通知 iOS 录音已开始；唤醒词路径下 iOS 状态为 idle，收到此帧后同步为 recording；
+     * iOS 手动触发路径下 iOS 已为 recording，收到此帧后忽略（有 canStart guard 保护） */
+    ble_l2cap_send_frame(FRAME_TYPE_RECORDING_STARTED, NULL, 0);
+
     ESP_LOGI(TAG, "Audio pipeline started (GMF)");
     return 0;
 }

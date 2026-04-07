@@ -16,9 +16,10 @@ let FRAME_TYPE_HEARTBEAT: UInt8        = 0x00
 let FRAME_TYPE_AUDIO: UInt8            = 0x01
 let FRAME_TYPE_VAD_PREWARM: UInt8      = 0xFF
 let FRAME_TYPE_END_OF_UTTERANCE: UInt8 = 0xFE
-let FRAME_TYPE_CMD_START_RECORD: UInt8 = 0x10
-let FRAME_TYPE_CMD_STOP_RECORD: UInt8  = 0x11
-let FRAME_TYPE_RECORD_END: UInt8       = 0x12
+let FRAME_TYPE_CMD_START_RECORD: UInt8  = 0x10
+let FRAME_TYPE_CMD_STOP_RECORD: UInt8   = 0x11
+let FRAME_TYPE_RECORD_END: UInt8        = 0x12
+let FRAME_TYPE_RECORDING_STARTED: UInt8 = 0x13  // ESP32 → iOS：录音已开始（唤醒词触发）
 
 final class L2CAPHandler: NSObject, StreamDelegate {
 
@@ -34,6 +35,9 @@ final class L2CAPHandler: NSObject, StreamDelegate {
 
     /// 录音结束回调
     var onRecordEnd: ((UInt32) -> Void)?
+
+    /// 录音开始回调（ESP32 唤醒词触发时通知 iOS 同步状态）
+    var onRecordingStarted: (() -> Void)?
 
     /// 普通消息回调（Phase 1 兼容）
     var onMessage: ((String) -> Void)?
@@ -162,6 +166,9 @@ final class L2CAPHandler: NSObject, StreamDelegate {
                 let totalFrames = frame.payload.withUnsafeBytes { $0.load(as: UInt32.self) }
                 onRecordEnd?(totalFrames)
             }
+
+        case FRAME_TYPE_RECORDING_STARTED:
+            onRecordingStarted?()
 
         case FRAME_TYPE_HEARTBEAT:
             // Phase 3: 心跳处理

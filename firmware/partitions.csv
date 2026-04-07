@@ -1,0 +1,8 @@
+# VoiceMask 自定义分区表 (2MB Flash)
+# 新增 model 分区用于存放 WakeNet9 模型 (wn9_jarvis_tts ~330KB)
+#
+# Name,     Type,  SubType,  Offset,   Size
+nvs,        data,  nvs,      0x9000,   0x6000,
+phy_init,   data,  phy,      0xf000,   0x1000,
+factory,    app,   factory,  0x10000,  0x140000,
+model,      data,  0x81,     0x150000, 0x80000,
