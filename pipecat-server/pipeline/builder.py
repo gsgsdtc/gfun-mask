@@ -25,12 +25,13 @@ from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.aggregators.llm_response_universal import LLMContextAggregatorPair
 from pipecat.serializers.base_serializer import FrameSerializer
 from pipecat.services.qwen.llm import QwenLLMService
+from pipecat.services.openai.llm import OpenAILLMService
 from pipecat.transports.websocket.fastapi import (
     FastAPIWebsocketParams,
     FastAPIWebsocketTransport,
 )
 
-from config import Config, DASHSCOPE_BASE_URL
+from config import Config, DASHSCOPE_BASE_URL, LMSTUDIO_BASE_URL
 from core.latency import LatencyRecord, LatencyTracker
 from services.dashscope import DashScopeSTTService, DashScopeTTSService
 
@@ -100,11 +101,21 @@ async def build_pipeline(
         ),
     )
 
-    llm = QwenLLMService(
-        api_key=Config.DASHSCOPE_API_KEY,
-        base_url=DASHSCOPE_BASE_URL,
-        model=Config.LLM_MODEL,
-    )
+    # 根据配置选择 LLM 提供商
+    if Config.LLM_PROVIDER == "lmstudio":
+        logger.info(f"[Pipeline] 使用 LM Studio 本地模型: {Config.LMSTUDIO_MODEL} @ {LMSTUDIO_BASE_URL}")
+        llm = OpenAILLMService(
+            api_key=Config.LMSTUDIO_API_KEY,
+            base_url=LMSTUDIO_BASE_URL,
+            model=Config.LMSTUDIO_MODEL,
+        )
+    else:
+        logger.info(f"[Pipeline] 使用 DashScope 通义千问: {Config.LLM_MODEL}")
+        llm = QwenLLMService(
+            api_key=Config.DASHSCOPE_API_KEY,
+            base_url=DASHSCOPE_BASE_URL,
+            model=Config.LLM_MODEL,
+        )
 
     stt = DashScopeSTTService(
         api_key=Config.DASHSCOPE_API_KEY,
