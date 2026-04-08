@@ -44,3 +44,7 @@ docs/bug/
 # Database
 pipecat-server/*.db
 
+# Environment variables
+.env
+**/.env
+
