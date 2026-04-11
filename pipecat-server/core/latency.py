@@ -52,6 +52,14 @@ class LatencyRecord:
     user_text: str = ""
     ai_text: str = ""
 
+    # feat-08: 打断和唤醒时间戳
+    interrupt_at: Optional[float] = None  # 收到 interrupt 消息的时间戳
+    wake_at: Optional[float] = None       # 收到 wake 消息的时间戳
+
+    # 计数器（由 session 管理器更新）
+    interrupt_count: int = 0
+    wake_count: int = 0
+
     # 完成回调（tts_ttfa 触发，写 DB + 输出日志）
     on_complete: Optional[Callable[["LatencyRecord"], Awaitable[None]]] = None
 

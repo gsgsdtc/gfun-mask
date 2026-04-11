@@ -16,10 +16,10 @@ CONFIG_LOG_DEFAULT_LEVEL_INFO=y
 CONFIG_PARTITION_TABLE_CUSTOM=y
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 
-# ESP-SR WakeNet 配置（使用真实人声训练的 hilexin 模型，支持自然发音 "嗨，乐鑫"）
-# CONFIG_SR_WN_WN9_JARVIS_TTS is not set
+# ESP-SR WakeNet 配置（使用英文 "Jarvis" 唤醒词）
+CONFIG_SR_WN_WN9_JARVIS_TTS=y
 # CONFIG_SR_WN_WN9S_HILEXIN is not set
-CONFIG_SR_WN_WN9_HILEXIN=y
+# CONFIG_SR_WN_WN9_HILEXIN is not set
 
 # PSRAM（OPI PSRAM @ 80MHz，ESP32-S3-BOX-Lite 8MB）
 # AFE ring buffer / WakeNet inference 需要 PSRAM，否则内部 SRAM 不足

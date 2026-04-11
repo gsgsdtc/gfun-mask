@@ -42,6 +42,14 @@ int audio_pipeline_start(void);
 int audio_pipeline_stop(void);
 
 /**
+ * @brief VAD 触发的停止录音
+ *
+ * 发送 END_OF_UTTERANCE (0xFE) 帧，停止流水线，恢复唤醒词检测
+ * @return 0 成功，负值失败
+ */
+int audio_pipeline_stop_vad(void);
+
+/**
  * @brief 获取当前状态
  * @return 当前状态
  */

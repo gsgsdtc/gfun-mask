@@ -1,11 +1,11 @@
 /*
- * @doc     docs/modules/audio-capture/design/07-wake-word-voice-activation-backend-design.md §4.1
- * @purpose BOOT 键中断处理：录音中按下则停止录音，恢复唤醒词检测
+ * @doc     docs/modules/audio-capture/design/08-live-chat-firmware-design.md §4.3
+ * @purpose BOOT 键中断处理：调试重置功能（可选）
  *
  * 设计要点：
+ *   - feat-08 后录音由 VAD 自动结束，按键不再用于停止录音
+ *   - 按键保留作为调试/紧急重置功能：强制停止 pipeline 并恢复监听
  *   - ISR 仅发送任务通知，不在中断上下文中调用 pipeline 接口
- *   - 按键防抖：仅在 AUDIO_STATE_RECORDING 时生效
- *   - 按键响应时延目标 ≤ 200ms
  */
 
 #include "esp_log.h"
@@ -44,10 +44,11 @@ static void IRAM_ATTR _gpio_isr_handler(void *arg)
 /* ── 按键处理任务 ─────────────────────────────────────────── */
 
 /*
- * @doc     §4.1 按键停止录音流程
- * @purpose 等待 ISR 通知，仅在 RECORDING 状态下执行停止录音
- * @context 与 wake_detector_result_cb 的 audio_pipeline_start() 互斥；
- *          state 检查保证两者不会同时触发
+ * @doc     §4.1 调试重置功能
+ * @purpose 等待 ISR 通知，在任意状态下执行调试重置
+ * @context feat-08 后 VAD 自动结束录音，按键改为调试/紧急重置功能
+ *          - 录音中：强制停止 pipeline，恢复监听
+ *          - 非录音中：仅打印日志（无操作）
  */
 static void _btn_task(void *arg)
 {
@@ -62,19 +63,16 @@ static void _btn_task(void *arg)
             continue;
         }
 
-        /* 仅在录音状态下响应 */
-        if (audio_pipeline_get_state() != AUDIO_STATE_RECORDING) {
-            ESP_LOGD(TAG, "Button pressed but not recording, ignored");
-            continue;
+        ESP_LOGI(TAG, "Reset button pressed (debug mode)");
+
+        /* 仅在录音状态下执行重置 */
+        if (audio_pipeline_get_state() == AUDIO_STATE_RECORDING) {
+            ESP_LOGI(TAG, "Forcing pipeline stop and resuming wake detector");
+            audio_pipeline_stop();
+            wake_detector_resume();
+        } else {
+            ESP_LOGD(TAG, "Not recording, nothing to reset");
         }
-
-        ESP_LOGI(TAG, "Stop button pressed, stopping recording");
-
-        /* 停止 GMF Pipeline（内部发送 FRAME_TYPE_RECORD_END） */
-        audio_pipeline_stop();
-
-        /* 恢复唤醒词检测 */
-        wake_detector_resume();
     }
 }
 

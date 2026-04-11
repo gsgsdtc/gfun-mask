@@ -256,6 +256,42 @@ int audio_pipeline_stop(void)
     return 0;
 }
 
+int audio_pipeline_stop_vad(void)
+{
+    if (s_state != AUDIO_STATE_RECORDING) {
+        ESP_LOGW(TAG, "Pipeline not recording, state=%d", s_state);
+        return -1;
+    }
+
+    /* 先设置 IDLE 状态 */
+    s_state = AUDIO_STATE_IDLE;
+
+    /* 立即发送 VAD 结束帧（在 pipeline 完全停止前，让 iOS 尽快收到） */
+    ble_l2cap_send_frame(FRAME_TYPE_END_OF_UTTERANCE, NULL, 0);
+
+    /* 等待 GMF Pipeline 停止 */
+    if (s_pipeline) {
+        esp_gmf_err_t ret = esp_gmf_pipeline_stop(s_pipeline);
+        if (ret != ESP_GMF_ERR_OK) {
+            ESP_LOGW(TAG, "pipeline_stop returned: %d", ret);
+        }
+    }
+
+    /* 销毁 Pipeline 和 Task */
+    _pipeline_destroy();
+
+    /* 发送 RECORD_END 帧用于确认 */
+    uint32_t total_frames = opus_encoder_get_frame_count();
+    ble_l2cap_send_frame(FRAME_TYPE_RECORD_END, (uint8_t *)&total_frames, sizeof(total_frames));
+
+    /* 恢复唤醒词检测 */
+    extern void wake_detector_resume(void);
+    wake_detector_resume();
+
+    ESP_LOGI(TAG, "Audio pipeline stopped by VAD, sent %lu frames", (unsigned long)total_frames);
+    return 0;
+}
+
 audio_state_t audio_pipeline_get_state(void)
 {
     return s_state;

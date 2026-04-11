@@ -14,6 +14,7 @@
 typedef enum {
     FRAME_TYPE_HEARTBEAT         = 0x00,  /* 心跳保活（Phase 3） */
     FRAME_TYPE_AUDIO             = 0x01,  /* Opus 音频帧 */
+    FRAME_TYPE_VAD_START         = 0x03,  /* VAD 检测到语音开始（feat-08） */
     FRAME_TYPE_VAD_PREWARM       = 0xFF,  /* VAD 预警（Phase 3） */
     FRAME_TYPE_END_OF_UTTERANCE  = 0xFE,  /* 说话结束标记（Phase 3） */
     FRAME_TYPE_CMD_START_RECORD  = 0x10,  /* 开始录音指令（iOS → ESP32） */

@@ -1,14 +1,15 @@
 /*
- * @doc     docs/modules/audio-capture/design/07-wake-word-voice-activation-backend-design.md
- * @purpose 唤醒词检测实现：AFE Manager (WakeNet-only) + suspend/resume 模式
+ * @doc     docs/modules/audio-capture/design/08-live-chat-firmware-design.md
+ * @purpose Live 聊天：AFE Manager (WakeNet + VADNet) + VAD 自动结束
  *
  * 架构说明：
- *   IDLE：AFE Manager 持有 I2S，通过 read_cb 持续喂入 WakeNet9
- *   RECORDING：AFE Manager 挂起（让出 I2S），GMF Pipeline 独占采集
+ *   IDLE：AFE Manager 持有 I2S，持续喂入 WakeNet9 + VADNet
+ *   RECORDING：AFE Manager 挂起，GMF Pipeline 独占采集，VAD 检测句末自动结束
  *
- * 检测到 "Jarvis" 后流程：
- *   1. wake_detector_suspend()  — 挂起 AFE，停止 I2S
- *   2. audio_pipeline_start()   — GMF Pipeline 接管 I2S，开始录音
+ * 流程：
+ *   1. 检测到 "Jarvis" → wake_detector_suspend() → audio_pipeline_start()
+ *   2. VAD_START → 发送 0x03 帧到 iOS（用于打断 TTS）
+ *   3. VAD_END → audio_pipeline_stop_vad() → 发送 0xFE 帧 → 恢复监听
  */
 
 #include <string.h>
@@ -21,6 +22,7 @@
 #include "audio_driver.h"
 #include "audio_pipeline.h"
 #include "wake_detector.h"
+#include "ble_l2cap.h"
 
 #define TAG "WAKE_DETECTOR"
 
@@ -72,10 +74,10 @@ static int32_t _afe_read_cb(void *buffer, int buf_sz, void *user_ctx, uint32_t t
 /* ── AFE Manager 回调：处理检测结果 ──────────────────────────── */
 
 /*
- * @doc     §4.1 唤醒 → 录音流程
- * @purpose 在 WAKENET_DETECTED 时触发录音启动
- * @context 此回调运行在 AFE fetch_task 中；
- *          若重复触发（已在 RECORDING）则忽略，防止状态混乱
+ * @doc     §4.1 唤醒 → 录音流程 + VAD 事件处理
+ * @purpose 在 WAKENET_DETECTED 时触发录音启动；
+ *          在 RECORDING 状态时处理 VAD_START/VAD_END 事件
+ * @context 此回调运行在 AFE fetch_task 中
  */
 static void _afe_result_cb(afe_fetch_result_t *result, void *user_ctx)
 {
@@ -95,8 +97,9 @@ static void _afe_result_cb(afe_fetch_result_t *result, void *user_ctx)
         return;
     }
 
+    /* 处理唤醒词检测事件 */
     if (result->wakeup_state == WAKENET_DETECTED) {
-        ESP_LOGI(TAG, "Wake word detected! (Hi Lexin / Jarvis)");
+        ESP_LOGI(TAG, "Wake word 'Jarvis' detected!");
 
         /* 防抖：已在录音状态则忽略 */
         if (audio_pipeline_get_state() != AUDIO_STATE_IDLE) {
@@ -112,7 +115,29 @@ static void _afe_result_cb(afe_fetch_result_t *result, void *user_ctx)
             ESP_LOGE(TAG, "audio_pipeline_start failed, resuming AFE");
             wake_detector_resume();
         }
+        return;
     }
+
+    /* 处理 VAD 事件（仅在 RECORDING 状态下响应） */
+    static int s_prev_vad_state = AFE_VAD_SILENCE;
+    int curr_vad = result->vad_state;
+
+    if (audio_pipeline_get_state() == AUDIO_STATE_RECORDING) {
+        /* VAD_START: 检测到用户开始说话（SILENCE -> SPEECH），发送 0x03 帧到 iOS（用于打断 TTS） */
+        if (s_prev_vad_state == AFE_VAD_SILENCE && curr_vad == AFE_VAD_SPEECH) {
+            ESP_LOGI(TAG, "VAD_START detected (silence->speech), sending frame 0x03");
+            ble_l2cap_send_frame(FRAME_TYPE_VAD_START, NULL, 0);
+        }
+
+        /* VAD_END: 检测到句末（SPEECH -> SILENCE），停止录音 */
+        if (s_prev_vad_state == AFE_VAD_SPEECH && curr_vad == AFE_VAD_SILENCE) {
+            ESP_LOGI(TAG, "VAD_END detected (speech->silence), stopping pipeline");
+            extern int audio_pipeline_stop_vad(void);
+            audio_pipeline_stop_vad();
+        }
+    }
+
+    s_prev_vad_state = curr_vad;
 }
 
 /* ── 公开接口 ─────────────────────────────────────────────── */
@@ -143,12 +168,11 @@ esp_err_t wake_detector_init(void)
                  s_models->model_info ? s_models->model_info[i] : "NULL");
     }
 
-    /* ── 2. 创建 AFE 配置（单麦克风，WakeNet-only）── */
-    /* 优先选 hilexin（中文，真实人声训练，验证流水线用）；
-     * 若不存在则回退到第一个可用模型 */
-    char *wn_model = esp_srmodel_filter(s_models, ESP_WN_PREFIX, "hilexin");
+    /* ── 2. 创建 AFE 配置（单麦克风，WakeNet + VADNet）── */
+    /* 使用 jarvis 模型（英文唤醒词） */
+    char *wn_model = esp_srmodel_filter(s_models, ESP_WN_PREFIX, "jarvis");
     if (!wn_model) {
-        ESP_LOGW(TAG, "hilexin not found, using default model");
+        ESP_LOGW(TAG, "jarvis not found, using default model");
     } else {
         ESP_LOGI(TAG, "Selected wake word model: %s", wn_model);
     }
@@ -161,12 +185,16 @@ esp_err_t wake_detector_init(void)
         s_models = NULL;
         return ESP_ERR_NO_MEM;
     }
-    /* 强制使用 hilexin 模型（如果找到） */
+    /* 强制使用 jarvis 模型（如果找到） */
     if (wn_model) {
         s_afe_cfg->wakenet_model_name = wn_model;
     }
-    /* 关闭 VAD（本期按键手动结束，不需要自动 VAD 结束） */
-    s_afe_cfg->vad_init = false;
+    /* 启用 WakeNet（必须显式设置，否则默认为 false） */
+    s_afe_cfg->wakenet_init = true;
+    /* 启用 VADNet（feat-08：VAD 自动检测句末，无需按键） */
+    s_afe_cfg->vad_init = true;
+    /* VAD 参数：过滤短于 300ms 的语音片段，减少误判 */
+    s_afe_cfg->vad_min_speech_ms = 300;
     /* 诊断：确认 WakeNet 是否被启用及使用的模型名 */
     ESP_LOGI(TAG, "AFE config: wakenet_init=%d, wakenet_model=%s",
              s_afe_cfg->wakenet_init,

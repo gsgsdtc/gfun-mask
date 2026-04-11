@@ -1,6 +1,7 @@
 /*
- * @doc     docs/modules/voice-chat/design/03-ios-voice-chat-frontend-design.md §2, §3
- * @purpose 语音聊天主页面：状态栏 + 对话气泡列表 + 状态指示 + 操作按钮
+ * @doc     docs/modules/voice-chat/design/08-live-chat-ios-design.md §2, §3
+ * @purpose Live 聊天主页面：状态栏 + 对话气泡列表 + 状态指示
+ *          feat-08: 自动唤醒词触发，VAD 自动结束，无需手动按钮
  */
 
 import SwiftUI
@@ -27,32 +28,36 @@ struct VoiceChatView: View {
 
             Divider()
 
-            // 底部控制区
+            // 底部控制区（手动模式）
             VStack(spacing: 12) {
                 // 状态描述
                 VoiceChatStatusLabel(
-                    chatState: viewModel.chatState,
+                    state: viewModel.state,
                     duration: viewModel.recordingDuration
                 )
 
-                // 主操作按钮
-                VoiceChatActionButton(
-                    chatState: viewModel.chatState,
-                    bleConnected: isBLEConnected,
-                    wsConnected: viewModel.isWebSocketConnected,
-                    onStart: {
-                        // 1. 告知 ESP32 开始推送音频帧
+                // 手动开始/停止按钮
+                HStack(spacing: 40) {
+                    Button(action: {
+                        viewModel.startManualRecording()
                         ble.l2capHandler?.sendStartRecord()
-                        // 2. 通知 Pipecat 服务端开始录音会话
-                        viewModel.startRecording()
-                    },
-                    onStop: {
-                        // 1. 告知 ESP32 停止推送音频帧
-                        ble.l2capHandler?.sendStopRecord()
-                        // 2. 通知 Pipecat 服务端触发 STT
-                        viewModel.stopRecording()
+                    }) {
+                        Image(systemName: "play.circle.fill")
+                            .font(.system(size: 44))
+                            .foregroundColor(viewModel.isManualRecording ? .gray : .green)
                     }
-                )
+                    .disabled(viewModel.isManualRecording)
+
+                    Button(action: {
+                        viewModel.stopManualRecording()
+                        ble.l2capHandler?.sendStopRecord()
+                    }) {
+                        Image(systemName: "stop.circle.fill")
+                            .font(.system(size: 44))
+                            .foregroundColor(viewModel.isManualRecording ? .red : .gray)
+                    }
+                    .disabled(!viewModel.isManualRecording)
+                }
             }
             .padding(.horizontal, 24)
             .padding(.vertical, 16)
@@ -62,6 +67,7 @@ struct VoiceChatView: View {
         }
         .onAppear {
             viewModel.connectWebSocket()
+            setupBLECallbacks()
         }
         .onDisappear {
             viewModel.disconnectWebSocket()
@@ -71,6 +77,22 @@ struct VoiceChatView: View {
     private var isBLEConnected: Bool {
         if case .connected = ble.connectionState { return true }
         return false
+    }
+
+    private func setupBLECallbacks() {
+        // feat-08: 设置 BLE 帧回调
+        ble.l2capHandler?.onAudioFrame = { [weak viewModel] data in
+            viewModel?.handleBLEAudioFrame(data)
+        }
+        ble.l2capHandler?.onVADStart = { [weak viewModel] in
+            viewModel?.handleVADStart()
+        }
+        ble.l2capHandler?.onEndOfUtterance = { [weak viewModel] in
+            viewModel?.handleEndOfUtterance()
+        }
+        ble.l2capHandler?.onRecordingStarted = { [weak viewModel] in
+            viewModel?.handleRecordingStarted()
+        }
     }
 }
 
@@ -188,21 +210,21 @@ struct ChatBubbleView: View {
 
 struct VoiceChatStatusLabel: View {
 
-    let chatState: ChatState
+    let state: LiveChatState
     let duration: TimeInterval
 
     var displayText: String {
-        switch chatState {
-        case .recording:
-            return String(format: "🎙 收音中... %.1fs", duration)
+        switch state {
+        case .listening:
+            return String(format: "🎙 录音中... %.1fs", duration)
         default:
-            return chatState.statusText
+            return state.statusText
         }
     }
 
     var body: some View {
         HStack(spacing: 6) {
-            if chatState == .processing || chatState == .playing {
+            if state == .processing || state == .ttsPlaying {
                 ProgressView().scaleEffect(0.7)
             }
             Text(displayText)
@@ -210,47 +232,6 @@ struct VoiceChatStatusLabel: View {
                 .foregroundColor(.secondary)
         }
         .frame(height: 24)
-    }
-}
-
-// MARK: - VoiceChatActionButton
-
-struct VoiceChatActionButton: View {
-
-    let chatState: ChatState
-    let bleConnected: Bool
-    let wsConnected: Bool
-    let onStart: () -> Void
-    let onStop: () -> Void
-
-    private var canInteract: Bool { bleConnected && wsConnected }
-
-    var body: some View {
-        Button(action: {
-            if chatState.isRecording { onStop() }
-            else if chatState.canStart { onStart() }
-        }) {
-            HStack(spacing: 8) {
-                Image(systemName: chatState.isRecording ? "stop.circle.fill" : "mic.circle.fill")
-                    .font(.title2)
-                Text(chatState.isRecording ? "停止" : "开始对话")
-                    .font(.headline)
-            }
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 16)
-            .background(buttonColor)
-            .foregroundColor(.white)
-            .clipShape(RoundedRectangle(cornerRadius: 14))
-        }
-        .disabled(!canInteract || (!chatState.canStart && !chatState.isRecording))
-        .accessibilityLabel(chatState.isRecording ? "停止录音" : "开始对话")
-    }
-
-    private var buttonColor: Color {
-        guard canInteract else { return .gray }
-        if chatState.isRecording { return .red }
-        if chatState.canStart { return .green }
-        return .gray
     }
 }
 

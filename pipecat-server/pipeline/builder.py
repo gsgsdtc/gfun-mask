@@ -6,18 +6,22 @@
 from __future__ import annotations
 
 import json
-from typing import Callable, Awaitable
+import time
+from enum import Enum
+from typing import Callable, Awaitable, Optional
 
 from fastapi.websockets import WebSocket
 from loguru import logger
 from pipecat.frames.frames import (
     Frame,
     InputAudioRawFrame,
+    LLMFullResponseEndFrame,
     OutputTransportMessageUrgentFrame,
     StartFrame,
     VADUserStartedSpeakingFrame,
     VADUserStoppedSpeakingFrame,
 )
+from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineParams, PipelineTask
@@ -39,6 +43,22 @@ TTS_AUDIO_PREFIX = 0xAA
 
 
 class iOSPingFrame(Frame):
+    pass
+
+
+# feat-08: 新增控制帧类型
+class iOSInterruptFrame(Frame):
+    """用户打断 TTS 播放"""
+    pass
+
+
+class iOSWakeFrame(Frame):
+    """设备从休眠唤醒"""
+    pass
+
+
+class iOSSleepFrame(Frame):
+    """设备进入休眠"""
     pass
 
 
@@ -73,7 +93,109 @@ class iOSProtocolSerializer(FrameSerializer):
             return VADUserStoppedSpeakingFrame()
         elif msg_type == "ping":
             return iOSPingFrame()
+        # feat-08: 新增消息类型处理
+        elif msg_type == "interrupt":
+            logger.info("[Serializer] ← interrupt → iOSInterruptFrame")
+            return iOSInterruptFrame()
+        elif msg_type == "wake":
+            logger.info("[Serializer] ← wake → iOSWakeFrame")
+            return iOSWakeFrame()
+        elif msg_type == "sleep":
+            logger.info("[Serializer] ← sleep → iOSSleepFrame")
+            return iOSSleepFrame()
         return None
+
+
+# feat-08: Session 状态管理
+class SessionState(Enum):
+    LISTENING = "listening"       # 监听中，等待用户说话
+    PROCESSING = "processing"     # 处理中，ASR -> LLM -> TTS
+    TTS_PLAYING = "tts_playing"   # TTS 正在播放
+    SLEEP = "sleep"               # 休眠状态
+
+
+class SessionManager(FrameProcessor):
+    """
+    feat-08: Session 状态管理器
+    处理 interrupt/wake/sleep 消息，管理状态转换
+    """
+
+    def __init__(self, record: LatencyRecord, transport, **kwargs):
+        super().__init__(**kwargs)
+        self._record = record
+        self._transport = transport
+        self._state = SessionState.LISTENING
+        self._task: Optional[PipelineTask] = None
+
+    def set_task(self, task: PipelineTask):
+        self._task = task
+
+    @property
+    def state(self) -> SessionState:
+        return self._state
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
+        await super().process_frame(frame, direction)
+
+        # 状态转换检测
+        if isinstance(frame, VADUserStoppedSpeakingFrame):
+            self._state = SessionState.PROCESSING
+            logger.info(f"[Session] State → PROCESSING")
+
+        elif isinstance(frame, LLMFullResponseEndFrame):
+            if self._state == SessionState.PROCESSING:
+                # TTS 即将开始
+                pass
+
+        # 处理控制帧
+        if isinstance(frame, iOSInterruptFrame):
+            await self._handle_interrupt()
+        elif isinstance(frame, iOSWakeFrame):
+            await self._handle_wake()
+        elif isinstance(frame, iOSSleepFrame):
+            await self._handle_sleep()
+
+        await self.push_frame(frame, direction)
+
+    async def _send_text_to_client(self, text: str):
+        """通过 transport 发送文本消息到客户端"""
+        try:
+            # 使用 transport 的 websocket 发送
+            websocket = getattr(self._transport, '_websocket', None)
+            if websocket:
+                await websocket.send_text(text)
+        except Exception as e:
+            logger.warning(f"[Session] 发送消息失败: {e}")
+
+    async def _handle_interrupt(self):
+        """处理打断：取消当前任务，清空 TTS 队列"""
+        self._record.interrupt_at = time.monotonic()
+        self._record.interrupt_count += 1
+        logger.info(f"[Session] Interrupt received, count={self._record.interrupt_count}")
+
+        # 取消当前管道任务
+        if self._task and self._state in (SessionState.PROCESSING, SessionState.TTS_PLAYING):
+            logger.info("[Session] Cancelling current pipeline task")
+            try:
+                await self._task.cancel()
+                # 通知 iOS 打断完成
+                await self._send_text_to_client(json.dumps({"type": "interrupt_ack"}))
+            except Exception as e:
+                logger.error(f"[Session] 打断任务失败: {e}")
+
+        self._state = SessionState.LISTENING
+
+    async def _handle_wake(self):
+        """处理唤醒：重置状态"""
+        self._record.wake_at = time.monotonic()
+        self._record.wake_count += 1
+        self._state = SessionState.LISTENING
+        logger.info(f"[Session] Wake received, count={self._record.wake_count}, state → LISTENING")
+
+    async def _handle_sleep(self):
+        """处理休眠：记录状态"""
+        self._state = SessionState.SLEEP
+        logger.info("[Session] Sleep received, state → SLEEP")
 
 
 async def build_pipeline(
@@ -85,6 +207,7 @@ async def build_pipeline(
     组装 Pipecat 管道并返回 PipelineTask。
     主调方（websocket_endpoint）负责 runner.run(task)。
     """
+    from pipecat.frames.frames import LLMFullResponseEndFrame
     from pipeline.processors import (
         PingHandler,
         TranscriptForwarder,
@@ -100,6 +223,9 @@ async def build_pipeline(
             serializer=iOSProtocolSerializer(),
         ),
     )
+
+    # feat-08: Session 管理器（需要在其他处理器之前）
+    session_mgr = SessionManager(record=record, transport=transport)
 
     # 根据配置选择 LLM 提供商
     if Config.LLM_PROVIDER == "lmstudio":
@@ -151,6 +277,7 @@ async def build_pipeline(
     pipeline = Pipeline([
         transport.input(),
         PingHandler(),
+        session_mgr,  # feat-08: Session 管理器
         LatencyTracker(record=record),
         stt,
         TranscriptForwarder(record=record),
@@ -158,7 +285,7 @@ async def build_pipeline(
         llm,
         LLMTextCapture(record=record),
         tts,
-        TTSAudioForwarder(record=record),
+        TTSAudioForwarder(record=record, session_mgr=session_mgr),
         transport.output(),
         context_aggregator.assistant(),
     ])
@@ -172,6 +299,9 @@ async def build_pipeline(
         ),
         enable_rtvi=False,
     )
+
+    # feat-08: 设置 task 引用到 session manager
+    session_mgr.set_task(task)
 
     @transport.event_handler("on_client_connected")
     async def on_connected(transport, client):
@@ -206,6 +336,8 @@ def make_on_complete(db_mod) -> Callable[[LatencyRecord], Awaitable[None]]:
             "llm_ttft_ms": rec.llm_ttft_ms,  "llm_total_ms": rec.llm_total_ms,
             "tts_ttfa_ms": rec.tts_ttfa_ms,  "tts_total_ms": rec.tts_total_ms,
             "e2e_ttfa_ms": rec.e2e_ttfa_ms,  "e2e_total_ms": rec.e2e_total_ms,
+            "interrupt_count": rec.interrupt_count,
+            "wake_count": rec.wake_count,
         }
         try:
             conn = await db_mod.get_connection()

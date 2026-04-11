@@ -97,9 +97,10 @@ class TTSAudioForwarder(FrameProcessor):
     - tts_end 时间戳随每个 TTSStopped 更新，最终值为最后一句结束时间
     """
 
-    def __init__(self, record: LatencyRecord, **kwargs):
+    def __init__(self, record: LatencyRecord, session_mgr=None, **kwargs):
         super().__init__(**kwargs)
         self._record = record
+        self._session_mgr = session_mgr
         self._tts_active: int = 0
         self._llm_done: bool = False
         self._first_audio_recorded: bool = False
@@ -133,6 +134,11 @@ class TTSAudioForwarder(FrameProcessor):
             await self.push_frame(OutputTransportMessageUrgentFrame(message=data))
         elif isinstance(frame, TTSStartedFrame):
             self._tts_active += 1
+            # feat-08: 更新 session 状态为 TTS 播放中
+            if self._session_mgr:
+                from pipeline.builder import SessionState
+                self._session_mgr._state = SessionState.TTS_PLAYING
+                logger.info("[Session] State → TTS_PLAYING")
             if not self._tts_started_sent:
                 logger.info("[TTSForwarder] → tts_start")
                 await self.push_frame(

@@ -44,10 +44,17 @@ struct ContentView: View {
                 Label("列表", systemImage: "list.bullet")
             }
 
-            // Tab 3: 语音聊天（Phase 3）
+            // Tab 3: 手动语音聊天
             VoiceChatView(viewModel: voiceChatViewModel, ble: ble)
                 .tabItem {
                     Label("聊天", systemImage: "message.circle")
+                }
+                .onAppear { activeMode = .voiceChat }
+
+            // Tab 4: Live 聊天（feat-08: 唤醒词 + VAD 自动）
+            LiveChatView(viewModel: voiceChatViewModel, ble: ble)
+                .tabItem {
+                    Label("Live", systemImage: "mic.waves")
                 }
                 .onAppear { activeMode = .voiceChat }
         }
@@ -71,8 +78,11 @@ struct ContentView: View {
         }
         print("[BLE] setupBLECallbacks: registering callbacks on handler \(handler)")
 
-        // 音频帧按 activeMode 路由
+        // 音频帧路由：根据当前活跃的 Tab 决定
         handler.onAudioFrame = { [weak audioReceiver] data in
+            // 检查当前哪个 Tab 处于活跃状态
+            // 录音 Tab 活跃 → 本地录音
+            // 聊天/Live Tab 活跃 → WebSocket 转发
             switch activeMode {
             case .recording:
                 print("[AUDIO] onAudioFrame → AudioReceiver: \(data.count) bytes")
@@ -83,9 +93,21 @@ struct ContentView: View {
             }
         }
 
-        // 录音开始通知（唤醒词触发时 ESP32 主动推送，iOS 同步状态）
-        // 手动按钮路径：iOS 已调用 startReceiving()，此处忽略（防止重置计数器）
-        // 唤醒词路径：iOS 未接收中，此处触发 startReceiving()
+        // VAD 开始事件：仅 Live 聊天 Tab 响应
+        handler.onVADStart = { [weak audioReceiver] in
+            print("[AUDIO] onVADStart received")
+            guard activeMode == .voiceChat else { return }
+            voiceChatViewModel.handleVADStart()
+        }
+
+        // 语音结束事件：仅 Live 聊天 Tab 响应
+        handler.onEndOfUtterance = { [weak audioReceiver] in
+            print("[AUDIO] onEndOfUtterance received")
+            guard activeMode == .voiceChat else { return }
+            voiceChatViewModel.handleEndOfUtterance()
+        }
+
+        // 录音开始通知（唤醒词触发）
         handler.onRecordingStarted = { [weak audioReceiver] in
             print("[AUDIO] onRecordingStarted received")
             switch activeMode {
@@ -97,7 +119,8 @@ struct ContentView: View {
                     print("[AUDIO] manual path → already receiving, skip")
                 }
             case .voiceChat:
-                Task { await self.voiceChatViewModel.startRecordingFromESP32() }
+                // Live 聊天模式下响应唤醒词
+                voiceChatViewModel.handleRecordingStarted()
             }
         }
 
@@ -111,8 +134,9 @@ struct ContentView: View {
                     saveRecording(opusData: opusData, duration: audioReceiver?.recordingDuration ?? 0)
                 }
             case .voiceChat:
-                // 触发 Pipecat STT 流程（等同于用户点击"停止"按钮）
-                Task { await self.voiceChatViewModel.stopRecording() }
+                // 手动聊天模式：由按钮控制
+                // Live 聊天模式：使用 VAD 结束事件
+                break
             }
         }
 
