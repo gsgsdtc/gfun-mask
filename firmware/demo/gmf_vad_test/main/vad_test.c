@@ -29,11 +29,13 @@
 #include "esp_gmf_task.h"
 
 #include "audio_driver.h"
-#include "audio_driver_es7210.h"
-#include "opus_encoder.h"
+
+/* 音频驱动注册函数（声明自 audio_driver_es7210.c）*/
+extern void audio_driver_es7210_register(void);
 #include "gmf_mic_io.h"
 #include "gmf_pcm_enc_el.h"
 #include "gmf_vad_el.h"
+#include "esp_vad.h"  /* For VAD_MODE_3 */
 #include "ble_l2cap_stub.h"
 
 #define TAG "VAD_TEST"
@@ -225,9 +227,7 @@ static void vad_test_task(void *arg)
     esp_gmf_pipeline_stop(s_pipeline);
     s_running = false;
 
-    /* 获取统计 */
-    uint32_t total_frames = opus_encoder_get_frame_count();
-    ESP_LOGI(TAG, "Pipeline stopped. Total frames: %lu", total_frames);
+    ESP_LOGI(TAG, "Pipeline stopped");
 
     destroy_pipeline();
 
@@ -265,14 +265,7 @@ void app_main(void)
         return;
     }
 
-    /* 初始化 Opus 编码器 */
-    if (opus_encoder_init() != 0) {
-        ESP_LOGE(TAG, "Opus encoder init failed");
-        drv->deinit();
-        return;
-    }
-
-    ESP_LOGI(TAG, "Hardware initialized");
+    ESP_LOGI(TAG, "Hardware initialized (PCM passthrough mode)");
 
     /* 延迟 2 秒让用户看到启动日志 */
     vTaskDelay(pdMS_TO_TICKS(2000));

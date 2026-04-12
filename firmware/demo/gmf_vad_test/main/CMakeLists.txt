@@ -2,38 +2,28 @@
 
 idf_component_register(
     SRCS
-        "vad_test.c"
+        # 基础测试（单轮）: "vad_test.c"
+        # 多轮测试（唤醒词 + 多轮对话）:
+        "vad_test_multi.c"
         "gmf_vad_el.c"
         "gmf_pcm_enc_el.c"
         "gmf_mic_io.c"
         "audio_driver.c"
         "audio_driver_es7210.c"
-        "opus_encoder.c"
         "ble_l2cap_stub.c"
     INCLUDE_DIRS
         "."
-        "../../main/audio"
-        "../../main"
-        "../../managed_components/espressif__esp-sr/src/include"
+        "../../../main/audio"
+        "../../../main"
+        "../../../main/boards"
+        "../../../managed_components/espressif__esp-sr/src/include"
     REQUIRES
-        esp_gmf_core
-        esp_gmf_ai_audio
-        esp-sr
+        espressif__gmf_core
+        espressif__gmf_io
+        espressif__gmf_ai_audio
+        espressif__esp-sr
         driver
         esp_timer
         freertos
-        nimble
-        esp-nimble-cpp
         nvs_flash
-)
-
-# Add opus encoder library
-add_custom_command(
-    OUTPUT ${CMAKE_CURRENT_SOURCE_DIR}/libopus.a
-    COMMAND echo "Using prebuilt opus library"
-    VERBATIM
-)
-
-target_link_libraries(${COMPONENT_LIB} INTERFACE
-    ${CMAKE_CURRENT_SOURCE_DIR}/../../main/opus/lib/libopus.a
 )
