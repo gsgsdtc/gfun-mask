@@ -23,6 +23,8 @@
 		AA0000A2 /* TtsAudioPlayer.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000084 /* TtsAudioPlayer.swift */; };
 		AA0000A3 /* VoiceChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000085 /* VoiceChatView.swift */; };
 		AA0000A4 /* VoiceChatViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000086 /* VoiceChatViewModel.swift */; };
+		AA0000A5 /* LiveChatManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000088 /* LiveChatManager.swift */; };
+		AA0000A6 /* LiveChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000089 /* LiveChatView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -44,6 +46,8 @@
 		AA000084 /* TtsAudioPlayer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TtsAudioPlayer.swift; sourceTree = "<group>"; };
 		AA000085 /* VoiceChatView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceChatView.swift; sourceTree = "<group>"; };
 		AA000086 /* VoiceChatViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceChatViewModel.swift; sourceTree = "<group>"; };
+		AA000088 /* LiveChatManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveChatManager.swift; sourceTree = "<group>"; };
+		AA000089 /* LiveChatView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveChatView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -116,7 +120,9 @@
 				AA000083 /* PipecatWebSocketClient.swift */,
 				AA000084 /* TtsAudioPlayer.swift */,
 				AA000085 /* VoiceChatView.swift */,
-				AA000086 /* VoiceChatViewModel.swift */,
+				AA000086 /* VoiceChatViewModel.swift */ ,
+			AA000088 /* LiveChatManager.swift */ ,
+			AA000089 /* LiveChatView.swift */,
 			);
 			path = VoiceChat;
 			sourceTree = "<group>";
@@ -213,7 +219,9 @@
 				AA0000A1 /* PipecatWebSocketClient.swift in Sources */,
 				AA0000A2 /* TtsAudioPlayer.swift in Sources */,
 				AA0000A3 /* VoiceChatView.swift in Sources */,
-				AA0000A4 /* VoiceChatViewModel.swift in Sources */,
+				AA0000A4 /* VoiceChatViewModel.swift in Sources */ ,
+				AA0000A5 /* LiveChatManager.swift in Sources */ ,
+				AA0000A6 /* LiveChatView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

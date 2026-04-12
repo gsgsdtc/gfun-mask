@@ -46,6 +46,14 @@ final class TtsAudioPlayer: NSObject, AVAudioPlayerDelegate {
         audioBuffer = Data()
     }
 
+    /// feat-08: 立即停止播放（用于打断 TTS）
+    func stopImmediate() {
+        audioPlayer?.stop()
+        audioPlayer = nil
+        audioBuffer = Data()
+        onPlaybackFinished?()
+    }
+
     // MARK: - AVAudioPlayerDelegate
 
     func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {

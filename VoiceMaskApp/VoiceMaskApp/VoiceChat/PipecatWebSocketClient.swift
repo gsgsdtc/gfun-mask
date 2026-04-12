@@ -110,6 +110,24 @@ final class PipecatWebSocketClient: NSObject {
         sendJSON(["type": "stop"])
     }
 
+    /// feat-08: 打断 TTS 播放
+    func sendInterrupt() {
+        print("[WS] ⚡ sendControl: interrupt")
+        sendJSON(["type": "interrupt"])
+    }
+
+    /// feat-08: 进入休眠状态
+    func sendSleep() {
+        print("[WS] 😴 sendControl: sleep")
+        sendJSON(["type": "sleep"])
+    }
+
+    /// feat-08: 从休眠唤醒
+    func sendWake() {
+        print("[WS] 👋 sendControl: wake")
+        sendJSON(["type": "wake"])
+    }
+
     /// 发送 PCM 音频帧（裸二进制，无协议头）
     func sendAudioFrame(_ data: Data) {
         guard isConnected else {

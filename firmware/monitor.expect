@@ -1,0 +1,34 @@
+#!/usr/bin/expect -f
+
+# 设置超时为无限
+set timeout -1
+
+# 启动 idf.py monitor
+spawn bash -c {
+    export IDF_PYTHON_ENV_PATH=/Users/guoshiguang/.espressif/python_env/idf5.5_py3.13_env
+    source ~/esp/v5.5.2/esp-idf/export.sh
+    idf.py -p /dev/cu.usbmodem21101 monitor
+}
+
+# 等待特定输出或用户中断
+expect {
+    "Wake word" {
+        puts "\n>>> 检测到唤醒词!"
+        exp_continue
+    }
+    "VAD_START" {
+        puts "\n>>> VAD 检测到语音开始"
+        exp_continue
+    }
+    "VAD_END" {
+        puts "\n>>> VAD 检测到语音结束"
+        exp_continue
+    }
+    "ERROR" {
+        puts "\n>>> 发生错误"
+        exp_continue
+    }
+    timeout {
+        exp_continue
+    }
+}

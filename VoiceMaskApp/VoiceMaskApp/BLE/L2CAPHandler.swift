@@ -14,6 +14,7 @@ import CoreBluetooth
 
 let FRAME_TYPE_HEARTBEAT: UInt8        = 0x00
 let FRAME_TYPE_AUDIO: UInt8            = 0x01
+let FRAME_TYPE_VAD_START: UInt8        = 0x03  // feat-08: VAD 检测到语音开始
 let FRAME_TYPE_VAD_PREWARM: UInt8      = 0xFF
 let FRAME_TYPE_END_OF_UTTERANCE: UInt8 = 0xFE
 let FRAME_TYPE_CMD_START_RECORD: UInt8  = 0x10
@@ -38,6 +39,12 @@ final class L2CAPHandler: NSObject, StreamDelegate {
 
     /// 录音开始回调（ESP32 唤醒词触发时通知 iOS 同步状态）
     var onRecordingStarted: (() -> Void)?
+
+    /// VAD 开始回调（feat-08：检测到用户开始说话）
+    var onVADStart: (() -> Void)?
+
+    /// 语音结束回调（feat-08：VAD 检测到句末）
+    var onEndOfUtterance: (() -> Void)?
 
     /// 普通消息回调（Phase 1 兼容）
     var onMessage: ((String) -> Void)?
@@ -174,8 +181,16 @@ final class L2CAPHandler: NSObject, StreamDelegate {
             // Phase 3: 心跳处理
             break
 
-        case FRAME_TYPE_VAD_PREWARM, FRAME_TYPE_END_OF_UTTERANCE:
-            // Phase 3: VAD 相关
+        case FRAME_TYPE_VAD_START:
+            // feat-08: VAD 检测到语音开始
+            onVADStart?()
+
+        case FRAME_TYPE_END_OF_UTTERANCE:
+            // feat-08: VAD 检测到句末
+            onEndOfUtterance?()
+
+        case FRAME_TYPE_VAD_PREWARM:
+            // Phase 3: VAD 预警（暂不使用）
             break
 
         default:
